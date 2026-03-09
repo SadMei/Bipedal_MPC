@@ -136,6 +136,7 @@ void Pin_KinDyn::dataBusWrite(DataBus &robotState) {
   robotState.Jcom_W = Jcom;
 
   robotState.inertia = inertia; // w.r.t body frame
+  robotState.tau_non_com = tau_non_com;
 }
 
 // update jacobians and joint positions
@@ -328,8 +329,8 @@ void Pin_KinDyn::computeDyn() {
   Eigen::Vector3d omega_W;
   omega_W << dq(3), dq(4), dq(5);
   // 这里采用严谨的科氏反馈：角动量变化率中的非线性漂移
-  Eigen::Vector3d tau_non_com_val =
-      dyn_dAg.block<3, model_biped.nv>(3, 0) * dq + omega_W.cross(h_angular);
+  tau_non_com =
+      dyn_dAg.block(3, 0, 3, model_biped.nv) * dq + omega_W.cross(h_angular);
 
   // cal CoM
   CoM_pos = data_biped.com[0];
