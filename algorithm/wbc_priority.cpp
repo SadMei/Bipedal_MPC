@@ -545,7 +545,7 @@ void WBC_priority::computeDdq(Pin_KinDyn& pinKinDynIn)
 		kin_tasks_walk.taskLib[id].dxDes = Eigen::VectorXd::Zero(6);
 
 		kin_tasks_walk.taskLib[id].kp = Eigen::MatrixXd::Identity(6, 6) * 2000;
-		kin_tasks_walk.taskLib[id].kp.block<1, 1>(2, 2) = kin_tasks_walk.taskLib[id].kp.block<1, 1>(2, 2) * 0.01;
+//		kin_tasks_walk.taskLib[id].kp.block<1, 1>(2, 2) = kin_tasks_walk.taskLib[id].kp.block<1, 1>(2, 2) * 0.01;
 //		kin_tasks_walk.taskLib[id].kp.block<1, 1>(4, 4) = kin_tasks_walk.taskLib[id].kp.block<1, 1>(4, 4) * 0.1;
 
 		kin_tasks_walk.taskLib[id].kd = Eigen::MatrixXd::Identity(6, 6) * 20;
@@ -555,7 +555,7 @@ void WBC_priority::computeDdq(Pin_KinDyn& pinKinDynIn)
 		kin_tasks_walk.taskLib[id].dJ.block(0, 22, 6, 3).setZero(); // exculde waist joints
 		kin_tasks_walk.taskLib[id].W.diagonal() = Eigen::VectorXd::Ones(model_nv);
 
-		if (delayed >= 10000)
+		if (coordinate && delayed >= 10000)
 		{
 			// 在 wbc_priority::computeDdq 中
 			// 找到 "SwingLeg" 任务的定义部分
@@ -803,15 +803,6 @@ void WBC_priority::computeDdq(Pin_KinDyn& pinKinDynIn)
 				state = 0;
 			}
 //			task.errX = task.errX * coordination_task_weight;
-
-			printcounter++;
-			if(printcounter == 5)
-			{
-//				printf("%f,%f,%f,%f,%f\r\n",q_target_l,q(L_KNEE_IDX),q_target_r,q(R_KNEE_IDX),v);
-//				printf("%d\r\n",model_nv);
-				serial1.sendFormattedData("%f,%f,%f,%f,%f,%f,%f,%d\r\n",q(L_HIP_IDX),q(R_HIP_IDX),-q_target_l,-q(L_KNEE_IDX),-q_target_r,-q(R_KNEE_IDX),v,state);
-				printcounter = 0;
-			}
 			// 设置控制器参数
 			task.ddxDes = Eigen::VectorXd::Zero(1);
 			task.dxDes = Eigen::VectorXd::Zero(1);
@@ -820,6 +811,16 @@ void WBC_priority::computeDdq(Pin_KinDyn& pinKinDynIn)
 			task.W.diagonal() = Eigen::VectorXd::Ones(model_nv);
 		}
 	}
+
+//	printcounter++;
+//	if(printcounter == 5)
+//	{
+////				printf("%f,%f,%f,%f,%f\r\n",q_target_l,q(L_KNEE_IDX),q_target_r,q(R_KNEE_IDX),v);
+////				printf("%d\r\n",model_nv);
+////		serial1.sendFormattedData("%f,%f,%f,%f,%f,%f,%f,%d\r\n",q(L_HIP_IDX),q(R_HIP_IDX),-q_target_l,-q(L_KNEE_IDX),-q_target_r,-q(R_KNEE_IDX),v,state);
+//		serial1.sendFormattedData("%f,%f,%f,%f\r\n",q(L_HIP_IDX),q(R_HIP_IDX),-q(L_KNEE_IDX),-q(R_KNEE_IDX));
+//		printcounter = 0;
+//	}
 
 	/// -------- stand -------------
 	{

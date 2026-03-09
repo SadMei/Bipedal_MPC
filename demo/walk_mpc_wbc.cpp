@@ -34,11 +34,11 @@ int main(int argc, char** argv)
 	// initialize classes
 	UIctr uiController(mj_model, mj_data);   // UI control for Mujoco
 	MJ_Interface mj_interface(mj_model, mj_data); // data interface for Mujoco
-	Pin_KinDyn kinDynSolver("../models/SRBM.urdf"); // kinematics and dynamics solver
+	Pin_KinDyn kinDynSolver("../models/AzureLoong.urdf"); // kinematics and dynamics solver
 	DataBus RobotState(kinDynSolver.model_nv); // data bus
 	WBC_priority WBC_solv(kinDynSolver.model_nv, 18, 22, 0.7, mj_model->opt.timestep); // WBC solver
 	MPC MPC_solv(dt_200Hz);  // mpc controller
-	GaitScheduler gaitScheduler(0.4, mj_model->opt.timestep); // gait scheduler
+	GaitScheduler gaitScheduler(0.5, mj_model->opt.timestep); // gait scheduler
 	PVT_Ctr pvtCtr(mj_model->opt.timestep, "../common/joint_ctrl_config.json");// PVT joint control
 	FootPlacement footPlacement; // foot-placement planner
 	JoyStickInterpreter jsInterp(mj_model->opt.timestep); // desired baselink velocity generator
@@ -52,14 +52,14 @@ int main(int argc, char** argv)
 	// initialize variables
 	double stand_legLength = 1.05;//0.97;// desired baselink height
 	double foot_height = 0.07; // distance between the foot ankel joint and the bottom
-	double xv_des = 1.5;  // desired velocity in x direction
+	double xv_des = 1.8;  // desired velocity in x direction
 	int model_nv = kinDynSolver.model_nv;
 
-	RobotState.width_hips = 0.229;
+	RobotState.width_hips = 0.209;
 	footPlacement.kp_vx = 0.1;
 	footPlacement.kp_vy = 0.03;
 	footPlacement.kp_wz = 0.03;
-	footPlacement.stepHeight = 0.175;
+	footPlacement.stepHeight = 0.205;
 	footPlacement.legLength = stand_legLength;
 
 	mju_copy(mj_data->qpos, mj_model->key_qpos, mj_model->nq * 1); // set ini pos in Mujoco
@@ -194,14 +194,14 @@ int main(int argc, char** argv)
 				Eigen::Matrix<double, 1, nu> K_diag;
 				L_diag <<
 					   1.0, 1.0, 1.0,//eul
-					1.0, 200.0, 1.0,//pCoM
-					1e-7, 1e-7, 1e-7,//w
-					100.0, 10.0, 1.0;//vCoM
+					   1.0, 200.0, 1.0,//pCoM
+					   1e-7, 1e-7, 1e-7,//w
+					   100.0, 10.0, 1.0;//vCoM
 				K_diag <<
 					   1.0, 1.0, 1.0,//fl
-					1.0, 1.0, 1.0,
-					1.0, 1.0, 1.0,//fr
-					1.0, 1.0, 1.0, 1.0;
+					   1.0, 1.0, 1.0,
+					   1.0, 1.0, 1.0,//fr
+					   1.0, 1.0, 1.0, 1.0;
 				MPC_solv.set_weight(1e-6, L_diag, K_diag);
 
 				Eigen::VectorXd pos_des = kinDynSolver.integrateDIY(RobotState.q, RobotState.wbc_delta_q_final);

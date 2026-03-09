@@ -21,9 +21,7 @@ MPC::MPC(double dtIn):QP(nu*ch, nc*ch) {
 	g = -9.8;       // 重力加速度 (m/s^2)，注意这里是负值
 	miu = 0.5;      // 地面摩擦系数
 
-	// --- 新增：模型改进所需参数 ---
-//	m_leg = 14.93274;    // 单条腿的近似质量 (kg)，用于计算其对总惯量的影响
-	m_leg = 0;
+	// --- Modified: 移除 m_leg，质心动力学不需要手动估算腿部质量 ---
 
 	// --- 足底几何参数 ---
 	// 用于计算ZMP（零力矩点）约束的足底边界尺寸 (m)
@@ -88,7 +86,7 @@ MPC::MPC(double dtIn):QP(nu*ch, nc*ch) {
 	R_cur.setZero();    // 当前机身旋转矩阵
 	R_w2f.setZero();    // 从世界系到支撑脚坐标系的旋转矩阵
 	R_f2w.setZero();    // 从支撑脚坐标系到世界系的旋转矩阵
-	Ig.setZero();       // 新增：总质心惯量张量
+	Ig.setZero();       // 新增：总质心惯量张量，不再初始化硬编码的 Ic
 
 	// --- 初始化QP求解器 qpOASES ---
 	qpOASES::Options  option;
@@ -201,27 +199,17 @@ void MPC::dataBusRead(DataBus &Data) {
 	pf2comd.block<3,1>(0,0) = pe.block<3,1>(0,0) - Xd.block<3,1>(3,0);
 	pf2comd.block<3,1>(3,0) = pe.block<3,1>(3,0) - Xd.block<3,1>(3,0);
 
-	// 更新机身惯量矩阵 Ic
-	Ic << 12.61,  0, 0.37
-		,0,  11.15, 0.01
-		,0.37,0.01, 2.15;
-//
-//	// --- 新增：更新考虑关节惯量的质心惯量张量 Ig ---
-//	// 使用并行轴定理，将腿部近似为质点，估算其对总惯量的贡献
-//	// Ig = I_torso + sum(m_leg * (skew(p_leg - p_com))^T * skew(p_leg - p_com))
-//	Eigen::Matrix3d I_legs;
-//	I_legs.setZero();
-//	// 计算从质心到左脚的向量的斜对称矩阵
-//	Eigen::Matrix3d skew_l = CrossProduct_A(pf2com.block<3,1>(0,0) * -1.0);
-//	// 计算从质心到右脚的向量的斜对称矩阵
-//	Eigen::Matrix3d skew_r = CrossProduct_A(pf2com.block<3,1>(3,0) * -1.0);
-//	// 对于质点，其惯量张量为 I = -m * [r]_x * [r]_x
-//	I_legs += -m_leg * skew_l * skew_l;
-//	I_legs += -m_leg * skew_r * skew_r;
+	// --- Modified: 移除旧的固定惯量 Ic，使用从 DataBus 读取的实时全身质心惯量 ---
+	// 之前的代码: Ic << 12.61, 0, 0.37, ...; (移除)
+	// 之前的代码: Ig = Ic + I_legs; (移除)
 
-	// 总质心惯量 = 躯干惯量 + 腿部贡献的惯量
-//	Ig = Ic + I_legs;
-	Ig = Ic;
+	// 这里的 Data.inertia 是由 pino_kin_dyn.cpp 计算的全身质心转动惯量
+	// 它随机器人的构型实时变化，体现了质心动力学特性
+	Ig = Data.inertia;
+	// 更新机身惯量矩阵 Ic
+//	Ig << 12.61,  0, 0.37
+//		,0,  11.15, 0.01
+//		,0.37,0.01, 2.15;
 
 	// --- 4. 预测未来支撑状态 ---
 	legStateCur = Data.legState;       // 当前支撑状态 (左/右/双支撑)
@@ -266,9 +254,13 @@ void MPC::cal() {
 			// 在每个预测步长更新从脚到质心的向量
 			pf2comi[i] = pf2com;
 			Eigen::Matrix3d Ic_W_inv;
-			// MODIFIED: 将(随构型变化的)总质心惯量张量旋转到世界坐标系下并求逆
-			// 使用 Ig 替代了固定的 Ic
+
+			// MODIFIED: 质心动力学核心修改
+			// 将(随构型变化的)总质心惯量张量旋转到世界坐标系下并求逆
+			// 使用 DataBus 传入的实时 Ig，替代了之前固定的 Ic
+			// Ig 的变化反映了挥腿、摆臂对整体转动惯量的影响
 			Ic_W_inv = (R_curz[i] * Ig * R_curz[i].transpose()).inverse();
+
 			// 连续时间模型 Bc
 			// 力矩对角速度的影响 (牛顿-欧拉方程)
 			Bc[i].block<3, 3>(6, 0) = Ic_W_inv * CrossProduct_A(pf2comi[i].block<3, 1>(0, 0)); // 左脚反作用力产生的力矩
