@@ -85,6 +85,7 @@ class MPC{
 
 	// Modified: 使用全身质心转动惯量 Ig 替代固定的 Ic
 	Eigen::Matrix<double,3,3>   Ig;
+	Eigen::Matrix<double, 3, 1> tau_non;
 
 	Eigen::Matrix<double,3,3>   R_curz[mpc_N];
 	Eigen::Matrix<double,3,3>   R_cur;

@@ -235,6 +235,11 @@ void MPC::dataBusRead(DataBus &Data) {
   //		,0,  11.15, 0.01
   //		,0.37,0.01, 2.15;
 
+	// --- 7. 根据最优控制输入，预测下一时刻的状态 ---
+	// 获取由底层算出的离心力和科氏力耦合反馈 (tau_non_com)，作为前馈补偿注入
+	// 从 DataBus 中提取真实角动量变化率的非线性项
+  tau_non = Data.tau_non_com;
+
   // --- 4. 预测未来支撑状态 ---
   legStateCur = Data.legState;      // 当前支撑状态 (左/右/双支撑)
   legStateNext = Data.legStateNext; // 下一个周期的支撑状态
@@ -558,10 +563,7 @@ void MPC::cal() {
         Ufe(i) = xOpt[i]; // 将结果存入Ufe向量
     }
 
-    // --- 7. 根据最优控制输入，预测下一时刻的状态 ---
-    // 获取由底层算出的离心力和科氏力耦合反馈 (tau_non_com)，作为前馈补偿注入
-    // 从 DataBus 中提取真实角动量变化率的非线性项
-    Eigen::Matrix<double, 3, 1> tau_non = Data.tau_non_com;
+
 
     // 使用连续时间模型计算状态导数
     dX_cal = Ac[0] * X_cur + Bc[0] * Ufe.block<nu, 1>(0, 0);
