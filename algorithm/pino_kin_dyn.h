@@ -80,6 +80,12 @@ public:
   Eigen::Vector3d CoM_pos;
   Eigen::Matrix3d inertia;
   Eigen::Vector3d tau_non_com;
+  Eigen::MatrixXd dyn_dAg_block;
+  Eigen::Vector3d h_angular;
+  Eigen::Vector3d omega_W;
+  std::vector<Eigen::Matrix3d> Ig_contrib;
+  std::vector<double> mass_contrib;
+
   enum legIdx { left, right };
   struct IkRes {
     int status;

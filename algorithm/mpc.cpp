@@ -619,8 +619,8 @@ void MPC::cal() {
                 << h_angular.transpose() << "\n";
       std::cout << "[3] Base Angular Velocity in World (omega_W):\n"
                 << omega_W.transpose() << "\n";
-      std::cout << "[4] Coriolis/Centrifugal Block (dyn_dAg_block * dq):\n"
-                << (dyn_dAg_block * Data.dq).transpose() << "\n";
+      std::cout << "[4] Coriolis/Centrifugal Block (dyn_dAg_block):\n"
+                << dyn_dAg_block << "\n";
       std::cout << "[5] Resulting Non-linear Swing Torque (tau_non):\n"
                 << tau_non.transpose() << "\n";
       std::cout << "[6] Continuous Affine Bias (Cc_inst):\n"
