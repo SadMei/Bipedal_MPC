@@ -8,7 +8,6 @@
 #include <iostream>
 #include <vector>
 
-
 struct DataBus {
   const int model_nv; // number of dq
 
@@ -67,6 +66,14 @@ struct DataBus {
   Eigen::MatrixXd dyn_M, dyn_M_inv, dyn_C, dyn_Ag, dyn_dAg;
   Eigen::VectorXd dyn_G, dyn_Non;
   Eigen::Vector3d base_omega_L, base_omega_W, base_rpy;
+
+  // Added for patent mathematical data extraction
+  Eigen::MatrixXd dyn_dAg_block;
+  Eigen::Vector3d h_angular;
+  Eigen::Vector3d omega_W;
+  std::vector<Eigen::Matrix3d>
+      Ig_contrib; // 每个刚体对局部质心的转动惯量贡献 (含平行轴定理)
+  std::vector<double> mass_contrib; // 每个刚体的质量
 
   Eigen::Vector3d slop;
   Eigen::Matrix<double, 3, 3> inertia;
@@ -165,6 +172,11 @@ struct DataBus {
     des_ddq = Eigen::VectorXd::Zero(model_nv);
     des_dq = Eigen::VectorXd::Zero(model_nv);
     des_delta_q = Eigen::VectorXd::Zero(model_nv);
+    dyn_dAg_block = Eigen::MatrixXd::Zero(3, model_nv);
+    h_angular.setZero();
+    omega_W.setZero();
+    Ig_contrib.assign(model_nv + 2, Eigen::Matrix3d::Zero());
+    mass_contrib.assign(model_nv + 2, 0.0);
     base_rpy_des.setZero();
     base_pos_des.setZero();
     js_eul_des.setZero();

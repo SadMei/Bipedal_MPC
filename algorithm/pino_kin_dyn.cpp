@@ -137,6 +137,11 @@ void Pin_KinDyn::dataBusWrite(DataBus &robotState) {
 
   robotState.inertia = inertia; // w.r.t body frame
   robotState.tau_non_com = tau_non_com;
+  robotState.dyn_dAg_block = dyn_dAg_block;
+  robotState.h_angular = h_angular;
+  robotState.omega_W = omega_W;
+  robotState.Ig_contrib = Ig_contrib;
+  robotState.mass_contrib = mass_contrib;
 }
 
 // update jacobians and joint positions
@@ -319,6 +324,27 @@ void Pin_KinDyn::computeDyn() {
   pinocchio::ccrba(model_biped, data_biped, q, dq);
   inertia = data_biped.Ig.inertia().matrix();
 
+  // 为专利数学算例准备：提取各刚体的局部惯量贡献 (复合刚体算法 CRBA)
+  Ig_contrib.assign(model_biped.nv + 1, Eigen::Matrix3d::Zero());
+  mass_contrib.assign(model_biped.nv + 1, 0.0);
+  for (int i = 1; i < model_biped.joints.size(); i++) {
+    // 获取第 i 个 joint (连杆) 的质量与空间变换
+    double m_i = model_biped.inertias[i].mass();
+    Eigen::Matrix3d I_local = model_biped.inertias[i].inertia();
+    auto R_i = data_biped.oMi[i].rotation();    // 在世界系下的旋转矩阵
+    auto p_i = data_biped.oMi[i].translation(); // 刚体在世界系下的绝对坐标
+    auto com_global = data_biped.com[0];        // 全系统质心坐标
+    Eigen::Vector3d d_i = p_i - com_global;     // 从全系统质心指向刚体的向量
+
+    // 平行轴定理: I_contrib = R_i * I_local * R_i^T + m_i * (d^T*d * I - d*d^T)
+    Eigen::Matrix3d I_rot = R_i * I_local * R_i.transpose();
+    Eigen::Matrix3d I_parr = m_i * (d_i.dot(d_i) * Eigen::Matrix3d::Identity() -
+                                    d_i * d_i.transpose());
+
+    Ig_contrib[i] = I_rot + I_parr;
+    mass_contrib[i] = m_i;
+  }
+
   // 计算专利中提到的用于质心角动量守恒的前馈补偿项 tau_non
   // tau_non = \dot{I}_g \omega + \omega \times (I_g \omega) = dAg_angular * dq
   // + (omega x (Ig * omega)) // 简化计算 在 Pinocchio
@@ -329,8 +355,9 @@ void Pin_KinDyn::computeDyn() {
   Eigen::Vector3d omega_W;
   omega_W << dq(3), dq(4), dq(5);
   // 这里采用严谨的科氏反馈：角动量变化率中的非线性漂移
-  tau_non_com =
-      dyn_dAg.block(3, 0, 3, model_biped.nv) * dq + omega_W.cross(h_angular);
+  dyn_dAg_block =
+      dyn_dAg.block(3, 0, 3, model_biped.nv); // 保存供打印用的科氏阵分块
+  tau_non_com = dyn_dAg_block * dq + omega_W.cross(h_angular);
 
   // cal CoM
   CoM_pos = data_biped.com[0];
