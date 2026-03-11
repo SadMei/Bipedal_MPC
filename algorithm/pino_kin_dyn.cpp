@@ -350,9 +350,9 @@ void Pin_KinDyn::computeDyn() {
   // + (omega x (Ig * omega)) // 简化计算 在 Pinocchio
   // 中，更直接且物理精确的做法是提取质心角动量变化率中不包含关节微商的纯非线性部分
   // 为了简化并严格对齐代码底层能力：直接提取 Centroidal Momentum Rate
-  // 的非线性反馈
-  Eigen::Vector3d h_angular = data_biped.hg.angular(); // Ig * omega + h_joints
-  Eigen::Vector3d omega_W;
+  // 为了简化并严格对齐代码底层能力：利用 Centroidal Momentum Matrix 手动计算
+  h_angular = dyn_Ag.block(3, 0, 3, model_biped.nv) * dq; // Angular momentum
+
   omega_W << dq(3), dq(4), dq(5);
   // 这里采用严谨的科氏反馈：角动量变化率中的非线性漂移
   dyn_dAg_block =
