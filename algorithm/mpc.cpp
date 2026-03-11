@@ -235,9 +235,9 @@ void MPC::dataBusRead(DataBus &Data) {
   //		,0,  11.15, 0.01
   //		,0.37,0.01, 2.15;
 
-	// --- 7. 根据最优控制输入，预测下一时刻的状态 ---
-	// 获取由底层算出的离心力和科氏力耦合反馈 (tau_non_com)，作为前馈补偿注入
-	// 从 DataBus 中提取真实角动量变化率的非线性项
+  // --- 7. 根据最优控制输入，预测下一时刻的状态 ---
+  // 获取由底层算出的离心力和科氏力耦合反馈 (tau_non_com)，作为前馈补偿注入
+  // 从 DataBus 中提取真实角动量变化率的非线性项
   tau_non = Data.tau_non_com;
 
   // --- 4. 预测未来支撑状态 ---
@@ -272,6 +272,8 @@ void MPC::dataBusRead(DataBus &Data) {
  */
 void MPC::cal() {
   if (EN) { // 只有在MPC启用时才执行计算
+    Eigen::MatrixXd C_seq =
+        Eigen::MatrixXd::Zero(nx * mpc_N, 1); // 存储每一预测步的离散偏置
     // --- 1. 构建离散时间状态空间模型 X(k+1) = A*X(k) + B*U(k) ---
     for (int i = 0; i < mpc_N; i++) {
       // 连续时间模型 Ac
@@ -311,6 +313,15 @@ void MPC::cal() {
       Bc[i]((nx - 1), (nu - 1)) = 1.0 / m;
       // 离散化: B = dt*Bc
       B[i] = dt * Bc[i];
+
+      // 新增：计算连续时间的常数偏置项 C_c（包含非线性前馈）
+      // 这完全对应专利中提到的仿射偏置项 Gc: [0, 0, -Ig^{-1} \tau_{non}, 0]^T
+      Eigen::Matrix<double, nx, 1> Cc_i;
+      Cc_i.setZero();
+      Cc_i.block<3, 1>(6, 0) = -Ic_W_inv * tau_non; // 角加速度的非线性前馈偏置
+
+      // 离散化常数项 C_d
+      C_seq.block<nx, 1>(i * nx, 0) = Cc_i * dt;
     }
 
     // --- 2. 构建QP问题的预测矩阵 ---
@@ -345,6 +356,7 @@ void MPC::cal() {
     Eigen::MatrixXd B_tmp = Eigen::MatrixXd::Zero(nx * mpc_N, nu * ch);
     B_tmp = Bqp1 * Bqp11;
     Bqp = Aqp1 * B_tmp;
+    Eigen::MatrixXd Cqp = Aqp1 * C_seq; // 将前馈偏置累积传播到整个预测域
 
     // --- 3. 构建QP代价函数 J = 0.5*U'*H*U + c'*U ---
     Eigen::Matrix<double, nu * ch, 1> delta_U;
@@ -365,8 +377,9 @@ void MPC::cal() {
     H = 2 * (Bqp.transpose() * L * Bqp + alpha * K) +
         1e-10 * Eigen::MatrixXd::Identity(nu * ch,
                                           nu * ch); // 加一个小的正则项防止H奇异
-    // 梯度向量 c = 2 * Bqp'*L*(Aqp*X_cur - Xd) + 2*alpha*K*delta_U
-    c = 2 * Bqp.transpose() * L * (Aqp * X_cur - Xd) + 2 * alpha * K * delta_U;
+    // 梯度向量 c = 2 * Bqp'*L*(Aqp*X_cur + Cqp - Xd) + 2*alpha*K*delta_U
+    c = 2 * Bqp.transpose() * L * (Aqp * X_cur + Cqp - Xd) +
+        2 * alpha * K * delta_U;
 
     // --- 4. 构建QP约束 lbA <= As*U <= ubA 以及 lu <= U <= uu ---
 
@@ -563,15 +576,14 @@ void MPC::cal() {
         Ufe(i) = xOpt[i]; // 将结果存入Ufe向量
     }
 
-
-
-    // 使用连续时间模型计算状态导数
-    dX_cal = Ac[0] * X_cur + Bc[0] * Ufe.block<nu, 1>(0, 0);
-
-    // 注入前馈补偿项 tau_non 至角加速度微商(牛顿-欧拉耦合分块)
+    // 使用连续时间模型结合常数偏置（包含前馈）计算状态导数
+    // 由于非线性偏置已经在 C_seq 中引入，直接加上 Cc 即可获得真实加速度
+    Eigen::Matrix<double, nx, 1> Cc_inst;
+    Cc_inst.setZero();
     Eigen::Matrix3d Ic_W_inv_c =
         (R_curz[0] * Ig * R_curz[0].transpose()).inverse();
-    dX_cal.block<3, 1>(6, 0) -= Ic_W_inv_c * tau_non;
+    Cc_inst.block<3, 1>(6, 0) = -Ic_W_inv_c * tau_non;
+    dX_cal = Ac[0] * X_cur + Bc[0] * Ufe.block<nu, 1>(0, 0) + Cc_inst;
 
     // 对预测进行简单的二阶积分补偿，提高精度
     Eigen::Matrix<double, nx, 1> delta_X;
@@ -582,8 +594,8 @@ void MPC::cal() {
       delta_X(i + 6) = dX_cal(i + 6) * dt;            // 角速度
       delta_X(i + 9) = dX_cal(i + 9) * dt;            // 线速度
     }
-    // 使用预测矩阵计算下一时刻的状态，并加入补偿
-    X_cal = (Aqp * X_cur + Bqp * Ufe).block<nx, 1>(nx * 0, 0) + delta_X;
+    // 使用预测矩阵计算下一时刻的状态，并加入补偿与仿射偏置项 Cqp
+    X_cal = (Aqp * X_cur + Bqp * Ufe + Cqp).block<nx, 1>(nx * 0, 0) + delta_X;
 
     Ufe_pre = Ufe.block<nu, 1>(0, 0); // 保存当前周期的控制输入，以备后用
     QP.reset();                       // 重置QP求解器，为下一次计算做准备
