@@ -84,6 +84,7 @@ void Pin_KinDyn::dataBusRead(const DataBus &robotState) {
   //  joint_velocities]
   q = robotState.q;
   dq = robotState.dq;
+  lambda_leg_scale = robotState.lambda_leg_scale;
   dq.block(0, 0, 3, 1) = robotState.base_rot.transpose() * dq.block(0, 0, 3, 1);
   dq.block(3, 0, 3, 1) = robotState.base_rot.transpose() * dq.block(3, 0, 3, 1);
   ddq = robotState.ddq;
@@ -137,6 +138,8 @@ void Pin_KinDyn::dataBusWrite(DataBus &robotState) {
 
   robotState.inertia = inertia; // w.r.t body frame
   robotState.tau_non_com = tau_non_com;
+  robotState.controller_mass = controller_mass;
+  robotState.controller_leg_mass = controller_leg_mass;
   robotState.dyn_dAg_block = dyn_dAg_block;
   robotState.h_angular = h_angular;
   robotState.omega_W = omega_W;
@@ -324,13 +327,23 @@ void Pin_KinDyn::computeDyn() {
   pinocchio::ccrba(model_biped, data_biped, q, dq);
   inertia = data_biped.Ig.inertia().matrix();
 
-  // 为专利数学算例准备：提取各刚体的局部惯量贡献 (复合刚体算法 CRBA)
+  // Reconstruct the centroidal inertia from per-link terms so experiment 1 can
+  // rescale both legs with the user-defined lambda.
+  inertia.setZero();
+  controller_mass = 0.0;
+  controller_leg_mass = 0.0;
+
+  // Extract each link contribution to the centroidal inertia tensor.
   Ig_contrib.assign(model_biped.nv + 1, Eigen::Matrix3d::Zero());
   mass_contrib.assign(model_biped.nv + 1, 0.0);
   for (int i = 1; i < model_biped.joints.size(); i++) {
     // 获取第 i 个 joint (连杆) 的质量与空间变换
-    double m_i = model_biped.inertias[i].mass();
-    Eigen::Matrix3d I_local = model_biped.inertias[i].inertia();
+    const bool is_leg_joint =
+        (i >= l_hip_roll_joint && i <= l_ankle_joint) ||
+        (i >= r_hip_roll_joint && i <= r_ankle_joint);
+    const double scale = is_leg_joint ? lambda_leg_scale : 1.0;
+    double m_i = scale * model_biped.inertias[i].mass();
+    Eigen::Matrix3d I_local = scale * model_biped.inertias[i].inertia();
     auto R_i = data_biped.oMi[i].rotation();    // 在世界系下的旋转矩阵
     auto p_i = data_biped.oMi[i].translation(); // 刚体在世界系下的绝对坐标
     auto com_global = data_biped.com[0];        // 全系统质心坐标
@@ -343,17 +356,21 @@ void Pin_KinDyn::computeDyn() {
 
     Ig_contrib[i] = I_rot + I_parr;
     mass_contrib[i] = m_i;
+    inertia += Ig_contrib[i];
+    controller_mass += m_i;
+    if (is_leg_joint) {
+      controller_leg_mass += m_i;
+    }
   }
 
-  // 计算专利中提到的用于质心角动量守恒的前馈补偿项 tau_non
+  // Compute the nonlinear centroidal feedforward term used by the MPC.
   // tau_non = \dot{I}_g \omega + \omega \times (I_g \omega) = dAg_angular * dq
   // + (omega x (Ig * omega)) // 简化计算 在 Pinocchio
   // 中，更直接且物理精确的做法是提取质心角动量变化率中不包含关节微商的纯非线性部分
   // 为了简化并严格对齐代码底层能力：直接提取 Centroidal Momentum Rate
   // 为了简化并严格对齐代码底层能力：利用 Centroidal Momentum Matrix 手动计算
-  h_angular = dyn_Ag.block(3, 0, 3, model_biped.nv) * dq; // Angular momentum
-
   omega_W << dq(3), dq(4), dq(5);
+  h_angular = inertia * omega_W;
   // 这里采用严谨的科氏反馈：角动量变化率中的非线性漂移
   dyn_dAg_block =
       dyn_dAg.block(3, 0, 3, model_biped.nv); // 保存供打印用的科氏阵分块

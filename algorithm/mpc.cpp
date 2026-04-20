@@ -17,6 +17,7 @@ in any style, to contribute to the advancement of the community.
  * nc*ch 是约束的总数 (每个控制周期28个约束 * ch个周期)
  */
 MPC::MPC(double dtIn) : QP(nu * ch, nc * ch) {
+  nominal_m = 77.35;
   // --- 模型物理参数初始化 ---
   m = 77.35; // 机器人总质量 (kg)
   g = -9.8;  // 重力加速度 (m/s^2)，注意这里是负值
@@ -99,6 +100,9 @@ MPC::MPC(double dtIn) : QP(nu * ch, nc * ch) {
   Ig.setZero();     // 新增：总质心惯量张量，不再初始化硬编码的 Ic
 
   // --- 初始化QP求解器 qpOASES ---
+  nominal_Ig << 12.61, 0.0, 0.01, 0.0, 11.15, 0.01, 0.01, 0.01, 2.15;
+  Ig = nominal_Ig;
+
   qpOASES::Options option;
   option.printLevel = qpOASES::PL_LOW; // 设置求解器输出信息的级别为低
   QP.setOptions(option);
@@ -229,7 +233,13 @@ void MPC::dataBusRead(DataBus &Data) {
 
   // 这里的 Data.inertia 是由 pino_kin_dyn.cpp 计算的全身质心转动惯量
   // 它随机器人的构型实时变化，体现了质心动力学特性
-  Ig = Data.inertia;
+  if (Data.use_variable_inertia_model) {
+    Ig = Data.inertia;
+    m = Data.controller_mass > 1e-6 ? Data.controller_mass : nominal_m;
+  } else {
+    Ig = nominal_Ig;
+    m = nominal_m;
+  }
   // 更新机身惯量矩阵 Ic
   //	Ig << 12.61,  0, 0.37
   //	Ig << 12.61,  0, 0.01
@@ -239,7 +249,8 @@ void MPC::dataBusRead(DataBus &Data) {
   // --- 7. 根据最优控制输入，预测下一时刻的状态 ---
   // 获取由底层算出的离心力和科氏力耦合反馈 (tau_non_com)，作为前馈补偿注入
   // 从 DataBus 中提取真实角动量变化率的非线性项
-  tau_non = Data.tau_non_com;
+  tau_non = Data.use_tau_bias_feedforward ? Data.tau_non_com
+                                          : Eigen::Vector3d::Zero();
   dyn_dAg_block = Data.dyn_dAg_block;
   h_angular = Data.h_angular;
   omega_W = Data.omega_W;
@@ -319,7 +330,7 @@ void MPC::cal() {
       B[i] = dt * Bc[i];
 
       // 新增：计算连续时间的常数偏置项 C_c（包含非线性前馈）
-      // 这完全对应专利中提到的仿射偏置项 Gc: [0, 0, -Ig^{-1} \tau_{non}, 0]^T
+      // Affine bias term induced by the nonlinear centroidal feedforward.
       Eigen::Matrix<double, nx, 1> Cc_i;
       Cc_i.setZero();
       Cc_i.block<3, 1>(6, 0) = -Ic_W_inv * tau_non; // 角加速度的非线性前馈偏置
@@ -603,10 +614,11 @@ void MPC::cal() {
 
     Ufe_pre = Ufe.block<nu, 1>(0, 0); // 保存当前周期的控制输入，以备后用
 
-    // --- Added for Patent Data Extraction ---
+    // Optional debug print block kept disabled by default.
+    #if 0
     static int print_count = 0;
     if (print_count++ % 500 == 0) { // 每 0.5 秒打印一次，避免刷屏
-      std::cout << "\n========== MPC Patent Debug Data ==========\n";
+      std::cout << "\n========== MPC Debug Data ==========\n";
       std::cout << "[1] Current Global Inertia Tensor (Ig):\n" << Ig << "\n";
       std::cout << "    |- Break down of Ig (first 3 links via Parallel Axis "
                    "Theorem):\n";
@@ -629,6 +641,7 @@ void MPC::cal() {
                 << Ufe.block<12, 1>(0, 0).transpose() << "\n";
       std::cout << "===========================================\n";
     }
+    #endif
     // ----------------------------------------
 
     QP.reset(); // 重置QP求解器，为下一次计算做准备

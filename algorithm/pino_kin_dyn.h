@@ -83,6 +83,9 @@ public:
   Eigen::MatrixXd dyn_dAg_block;
   Eigen::Vector3d h_angular;
   Eigen::Vector3d omega_W;
+  double lambda_leg_scale{1.0};
+  double controller_mass{77.35};
+  double controller_leg_mass{0.0};
   std::vector<Eigen::Matrix3d> Ig_contrib;
   std::vector<double> mass_contrib;
 

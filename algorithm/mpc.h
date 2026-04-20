@@ -81,12 +81,13 @@ private:
   Eigen::Matrix<double, nc * ch, 1> bs;
   double max[6], min[6];
 
-  double m, g, miu, delta_foot[4];
+  double m, nominal_m, g, miu, delta_foot[4];
   Eigen::Matrix<double, 3, 1> pCoM;
   Eigen::Matrix<double, 6, 1> pf2com, pf2comd, pe;
   Eigen::Matrix<double, 6, 1> pf2comi[mpc_N];
 
   // Modified: 使用全身质心转动惯量 Ig 替代固定的 Ic
+  Eigen::Matrix<double, 3, 3> nominal_Ig;
   Eigen::Matrix<double, 3, 3> Ig;
   Eigen::Matrix<double, 3, 1> tau_non;
   Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic> dyn_dAg_block;

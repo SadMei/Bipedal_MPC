@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Eigen/Dense"
+#include <cstdint>
 #include "iomanip"
 #include <iostream>
 #include <vector>
@@ -67,7 +68,7 @@ struct DataBus {
   Eigen::VectorXd dyn_G, dyn_Non;
   Eigen::Vector3d base_omega_L, base_omega_W, base_rpy;
 
-  // Added for patent mathematical data extraction
+  // Centroidal dynamics terms used by the MPC layer
   Eigen::MatrixXd dyn_dAg_block;
   Eigen::Vector3d h_angular;
   Eigen::Vector3d omega_W;
@@ -77,6 +78,23 @@ struct DataBus {
 
   Eigen::Vector3d slop;
   Eigen::Matrix<double, 3, 3> inertia;
+  double controller_mass{77.35};
+  double controller_leg_mass{0.0};
+
+  // Experiment configuration and plotting-friendly signals
+  int exp_id{1};
+  double lambda_leg_scale{1.0};
+  bool use_variable_inertia_model{true};
+  bool use_tau_bias_feedforward{true};
+  double target_speed_x{0.0};
+  double push_force_cmd{0.0};
+  double push_start_time{0.0};
+  double push_duration{0.0};
+  uint32_t step_count{0};
+  bool fall_detected{false};
+  double vel_track_error{0.0};
+  double torso_angle_error{0.0};
+  double tau_bias_norm{0.0};
   Eigen::Vector3d tau_non_com; // 质心动力学的非线性前馈补偿项，供MPC使用
 
   // cmd value from the joystick interpreter
