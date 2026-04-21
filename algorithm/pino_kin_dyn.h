@@ -80,14 +80,9 @@ public:
   Eigen::Vector3d CoM_pos;
   Eigen::Matrix3d inertia;
   Eigen::Vector3d tau_non_com;
-  Eigen::MatrixXd dyn_dAg_block;
-  Eigen::Vector3d h_angular;
-  Eigen::Vector3d omega_W;
   double lambda_leg_scale{1.0};
   double controller_mass{77.35};
   double controller_leg_mass{0.0};
-  std::vector<Eigen::Matrix3d> Ig_contrib;
-  std::vector<double> mass_contrib;
 
   enum legIdx { left, right };
   struct IkRes {
@@ -98,6 +93,7 @@ public:
   };
 
   Pin_KinDyn(std::string urdf_pathIn);
+  void applyLegInertiaScale(double scale);
   void dataBusRead(DataBus const &robotState);
   void dataBusWrite(DataBus &robotState);
   void computeJ_dJ();
@@ -117,5 +113,7 @@ public:
   void workspaceConstraint(Eigen::VectorXd &qFT, Eigen::VectorXd &tauJointFT);
 
 private:
+  bool isLegJoint(pinocchio::JointIndex joint_id) const;
+  std::vector<pinocchio::Inertia> nominal_inertias_biped;
   pinocchio::Data data_biped, data_biped_fixed;
 };

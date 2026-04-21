@@ -90,11 +90,6 @@ private:
   Eigen::Matrix<double, 3, 3> nominal_Ig;
   Eigen::Matrix<double, 3, 3> Ig;
   Eigen::Matrix<double, 3, 1> tau_non;
-  Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic> dyn_dAg_block;
-  Eigen::Vector3d h_angular;
-  Eigen::Vector3d omega_W;
-  std::vector<Eigen::Matrix3d> Ig_contrib;
-  std::vector<double> mass_contrib;
 
   Eigen::Matrix<double, 3, 3> R_curz[mpc_N];
   Eigen::Matrix<double, 3, 3> R_cur;

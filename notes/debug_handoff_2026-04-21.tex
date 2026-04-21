@@ -1,0 +1,121 @@
+\documentclass[11pt]{ctexart}
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\hypersetup{colorlinks=true,linkcolor=black,urlcolor=blue}
+
+\title{Bipedal\_MPC Debug Handoff\\2026-04-21}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{1. 当前目标}
+当前代码的核心目标是让实验一严格对应论文中的物理含义：在一族双腿质量/惯量占比不同的机器人上，比较 SRBM 与 VICM 两种控制器的性能差异。这里的缩放系数 $\lambda$ 不固定整机总质量，而是统一缩放双腿相关连杆的质量与惯量，因此当 $\lambda$ 增大时，双腿对整机质心惯量和角动量演化的影响会增强，SRBM 理论上更容易失稳，而 VICM 会表现出更明显的优势。
+
+\section*{2. 四个实验的定义}
+\begin{enumerate}
+  \item 实验一：$\lambda$ 敏感性分析。扫描双腿质量/惯量缩放系数 $\lambda$，比较 SRBM 与 VICM 的稳定行走步数。
+  \item 实验二：速度扫描实验。在 $\lambda = 1$ 的情况下，提高目标行走速度，比较稳定行走步数。
+  \item 实验三：$\tau_{bias}$ 消融实验。在 $\lambda = 1$ 下比较是否启用非线性角动量前馈补偿。
+  \item 实验四：扰动恢复实验。在 $\lambda = 1$ 下对机器人施加外力脉冲，比较扰动恢复能力。
+\end{enumerate}
+
+\section*{3. 当前代码中已经完成的关键修改}
+\subsection*{3.1 MuJoCo 与 Pinocchio 在启动时统一缩放}
+为了避免维护多份 XML/URDF 文件，当前方案是在启动时同步缩放 MuJoCo plant 和 Pinocchio 动力学模型：
+\begin{itemize}
+  \item 在 \texttt{demo/walk\_mpc\_wbc.cpp} 中新增 \texttt{applyMuJoCoLegInertiaScale(...)}，对双腿 12 个 body 的 \texttt{mass} 和 \texttt{body\_inertia} 统一乘以 $\lambda$。
+  \item 在 \texttt{algorithm/pino\_kin\_dyn.h/.cpp} 中新增 \texttt{applyLegInertiaScale(double scale)}，对 Pinocchio 读取到的双腿关节对应连杆惯性参数统一缩放。
+  \item 当前实验一已经不是“只改控制模型”的失配实验，而是“真实机器人与控制模型一起变化”的实验口径。
+\end{itemize}
+
+\subsection*{3.2 Pinocchio 动力学链路}
+当前 \texttt{pino\_kin\_dyn.cpp} 的处理逻辑已经改成：
+\begin{itemize}
+  \item \texttt{computeDyn()} 直接基于缩放后的 \texttt{model\_biped} 计算 \texttt{M}、\texttt{Ag}、\texttt{dAg}、\texttt{Ig}。
+  \item \texttt{inertia = data\_biped.Ig.inertia().matrix()}。
+  \item \texttt{controller\_mass} 和 \texttt{controller\_leg\_mass} 直接从当前激活模型的惯性参数求和得到。
+  \item \texttt{tau\_non\_com} 使用完整角动量写法：
+  \[
+    \tau_{non} = \dot{A}_{g,\mathrm{ang}} \dot{q} + \omega \times h_{\mathrm{ang}},
+    \qquad h_{\mathrm{ang}} = A_{g,\mathrm{ang}} \dot{q}
+  \]
+  这样不会丢掉摆动关节速度对角动量的贡献。
+\end{itemize}
+
+\subsection*{3.3 MPC 层}
+当前 \texttt{algorithm/mpc.cpp} 中已经做了两件重要修正：
+\begin{itemize}
+  \item 无论使用 SRBM 还是 VICM，\texttt{m} 都使用当前缩放机器人对应的 \texttt{controller\_mass}，保证两种控制器是在同一台真实机器人上比较。
+  \item 当 \texttt{use\_variable\_inertia\_model = true} 时使用实时 \texttt{Data.inertia}；否则使用常值 \texttt{nominal\_Ig}。
+\end{itemize}
+因此当前 SRBM 与 VICM 的差异主要体现在：
+\begin{itemize}
+  \item SRBM：常值惯量近似，无 \texttt{tau\_bias} 前馈。
+  \item VICM：时变 \texttt{I\_G(q)}，含 \texttt{tau\_bias} 前馈。
+\end{itemize}
+
+\subsection*{3.4 记录与做图输出}
+当前 \texttt{demo/walk\_mpc\_wbc.cpp} 已经支持：
+\begin{itemize}
+  \item \texttt{int8\_t exp = 1/2/3/4} 切换四类实验；
+  \item 输出 \texttt{../record/expN\_trace.csv}；
+  \item 输出 \texttt{../record/exp\_summary.csv}；
+  \item \texttt{controller\_mass}、\texttt{controller\_leg\_mass}、\texttt{fall\_detected} 等列已与表头对齐。
+\end{itemize}
+
+\section*{4. 这版代码与论文含义的对应关系}
+\begin{itemize}
+  \item 论文中实验一的正确含义是：随着真实机器人双腿惯量占比提高，SRBM 性能逐渐恶化，而 VICM 因为显式考虑双腿惯量及其补偿，性能更稳。
+  \item 当前实现已经尽量对齐这个逻辑：MuJoCo 和 Pinocchio 同时缩放，SRBM/VICM 在同一机器人上比较。
+  \item 不固定总质量，因此实验一中 $\lambda$ 同时改变了双腿占比和整机总质量。这一点需要在论文中说清楚。
+\end{itemize}
+
+\section*{5. 当前仍建议在 Linux 上优先验证的内容}
+\begin{enumerate}
+  \item 完整编译与运行：Windows 本地没有完成干净的构建链验证，建议在 Linux 上重新完整编译。
+  \item 验证 MuJoCo 缩放是否生效：重点检查 12 个腿部 body 名称是否全部正确命中。
+  \item 验证 Pinocchio 惯量缩放是否生效：确认 \texttt{applyLegInertiaScale(...)} 后 \texttt{controller\_mass}、\texttt{controller\_leg\_mass} 和 \texttt{inertia} 随 $\lambda$ 正常变化。
+  \item 验证实验一是否呈现预期趋势：$\lambda$ 小时 SRBM/VICM 差别不大，$\lambda$ 大时 SRBM 更快失稳。
+  \item 验证实验三是否能单独体现 \texttt{tau\_bias} 的作用，而不被其他近似污染。
+\end{enumerate}
+
+\section*{6. 论文侧尚可继续核对的两处}
+\begin{itemize}
+  \item 摆动腿竖直轨迹：代码当前是 Raibert 落脚点 + 水平摆线 + 竖直平滑轨迹，和论文里“纯摆线竖直公式”不完全一致。
+  \item WBC 优先级的文字描述：论文中的优先级表述与当前 \texttt{wbc\_priority.cpp} 代码顺序不完全一致，后续建议统一。
+\end{itemize}
+
+\section*{7. Linux 上建议的第一步操作}
+\begin{enumerate}
+  \item 拉取本次提交对应的代码。
+  \item 编译后先运行实验一，固定 \texttt{exp = 1}，手动扫描若干个 $\lambda$ 值。
+  \item 优先检查输出文件：
+  \begin{itemize}
+    \item \texttt{record/exp1\_trace.csv}
+    \item \texttt{record/exp\_summary.csv}
+  \end{itemize}
+  \item 若实验一趋势正确，再继续跑实验二、三、四。
+\end{enumerate}
+
+\section*{8. 本次主要修改文件}
+\begin{itemize}
+  \item \texttt{algorithm/pino\_kin\_dyn.cpp}
+  \item \texttt{algorithm/pino\_kin\_dyn.h}
+  \item \texttt{algorithm/mpc.cpp}
+  \item \texttt{algorithm/mpc.h}
+  \item \texttt{common/data\_bus.h}
+  \item \texttt{demo/walk\_mpc\_wbc.cpp}
+  \item 以及当前工作区中已存在的：
+  \begin{itemize}
+    \item \texttt{algorithm/foot\_placement.cpp}
+    \item \texttt{algorithm/wbc\_priority.cpp}
+  \end{itemize}
+  其中后两者是此前已经在工作区里的修改，这次未回退。
+\end{itemize}
+
+\end{document}

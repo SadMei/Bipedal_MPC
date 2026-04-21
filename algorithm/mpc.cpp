@@ -233,27 +233,22 @@ void MPC::dataBusRead(DataBus &Data) {
 
   // 这里的 Data.inertia 是由 pino_kin_dyn.cpp 计算的全身质心转动惯量
   // 它随机器人的构型实时变化，体现了质心动力学特性
+  const double controller_mass =
+      Data.controller_mass > 1e-6 ? Data.controller_mass : nominal_m;
+  m = controller_mass;
+  max[2] = -3.0 * m * g;
+
   if (Data.use_variable_inertia_model) {
     Ig = Data.inertia;
-    m = Data.controller_mass > 1e-6 ? Data.controller_mass : nominal_m;
   } else {
     Ig = nominal_Ig;
-    m = nominal_m;
   }
   // 更新机身惯量矩阵 Ic
-  //	Ig << 12.61,  0, 0.37
-  //	Ig << 12.61,  0, 0.01
-  //		,0,  11.15, 0.01
-  //		,0.37,0.01, 2.15;
+  //	Ig << 12.61,  0    , 0.01
+  //		    ,0   ,  11.15, 0.01
+  //		    ,0.37,  0.01 , 2.15;
 
-  // --- 7. 根据最优控制输入，预测下一时刻的状态 ---
-  // 获取由底层算出的离心力和科氏力耦合反馈 (tau_non_com)，作为前馈补偿注入
-  // 从 DataBus 中提取真实角动量变化率的非线性项
-  tau_non = Data.use_tau_bias_feedforward ? Data.tau_non_com
-                                          : Eigen::Vector3d::Zero();
-  dyn_dAg_block = Data.dyn_dAg_block;
-  h_angular = Data.h_angular;
-  omega_W = Data.omega_W;
+  tau_non = Data.use_tau_bias_feedforward ? Data.tau_non_com : Eigen::Vector3d::Zero();
 
   // --- 4. 预测未来支撑状态 ---
   legStateCur = Data.legState;      // 当前支撑状态 (左/右/双支撑)
@@ -271,8 +266,7 @@ void MPC::dataBusRead(DataBus &Data) {
   // --- 5. 设置支撑平面坐标系 ---
   // 为了简化摩擦锥约束，将约束转换到与地面（支撑平面）平行的坐标系下进行计算
   Eigen::Matrix<double, 3, 3> R_slop;
-  R_slop =
-      eul2Rot(Data.slop(0), Data.slop(1), Data.slop(2)); // 地面坡度的旋转矩阵
+  R_slop = eul2Rot(Data.slop(0), Data.slop(1), Data.slop(2)); // 地面坡度的旋转矩阵
   if (legStateCur == DataBus::RSt)
     R_f2w = Data.fe_r_rot_W; // 右脚支撑，使用右脚姿态
   else if (legStateCur == DataBus::LSt)
@@ -613,36 +607,6 @@ void MPC::cal() {
     X_cal = (Aqp * X_cur + Bqp * Ufe + Cqp).block<nx, 1>(nx * 0, 0) + delta_X;
 
     Ufe_pre = Ufe.block<nu, 1>(0, 0); // 保存当前周期的控制输入，以备后用
-
-    // Optional debug print block kept disabled by default.
-    #if 0
-    static int print_count = 0;
-    if (print_count++ % 500 == 0) { // 每 0.5 秒打印一次，避免刷屏
-      std::cout << "\n========== MPC Debug Data ==========\n";
-      std::cout << "[1] Current Global Inertia Tensor (Ig):\n" << Ig << "\n";
-      std::cout << "    |- Break down of Ig (first 3 links via Parallel Axis "
-                   "Theorem):\n";
-      for (int i = 1; i <= 3 && i < Ig_contrib.size(); i++) {
-        std::cout << " Link " << i << " mass: " << mass_contrib[i]
-                  << " kg, mapped inertia:\n"
-                  << Ig_contrib[i] << "\n";
-      }
-      std::cout << "[2] Angular Momentum (h_angular):\n"
-                << h_angular.transpose() << "\n";
-      std::cout << "[3] Base Angular Velocity in World (omega_W):\n"
-                << omega_W.transpose() << "\n";
-      std::cout << "[4] Coriolis/Centrifugal Block (dyn_dAg_block):\n"
-                << dyn_dAg_block << "\n";
-      std::cout << "[5] Resulting Non-linear Swing Torque (tau_non):\n"
-                << tau_non.transpose() << "\n";
-      std::cout << "[6] Continuous Affine Bias (Cc_inst):\n"
-                << Cc_inst.transpose() << "\n";
-      std::cout << "[7] Optimal Foot Force Result (Ufe, first 12):\n"
-                << Ufe.block<12, 1>(0, 0).transpose() << "\n";
-      std::cout << "===========================================\n";
-    }
-    #endif
-    // ----------------------------------------
 
     QP.reset(); // 重置QP求解器，为下一次计算做准备
   }

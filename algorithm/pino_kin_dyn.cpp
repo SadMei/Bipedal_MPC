@@ -8,12 +8,14 @@ in any style, to contribute to the advancement of the community.
 */
 #include "pino_kin_dyn.h"
 
+#include <cmath>
 #include <utility>
 
 Pin_KinDyn::Pin_KinDyn(std::string urdf_pathIn) {
+  urdf_path = std::move(urdf_pathIn);
   pinocchio::JointModelFreeFlyer root_joint;
-  pinocchio::urdf::buildModel(urdf_pathIn, root_joint, model_biped);
-  pinocchio::urdf::buildModel(urdf_pathIn, model_biped_fixed);
+  pinocchio::urdf::buildModel(urdf_path, root_joint, model_biped);
+  pinocchio::urdf::buildModel(urdf_path, model_biped_fixed);
   data_biped = pinocchio::Data(model_biped);
   data_biped_fixed = pinocchio::Data(model_biped_fixed);
   model_nv = model_biped.nv;
@@ -55,6 +57,7 @@ Pin_KinDyn::Pin_KinDyn(std::string urdf_pathIn) {
   l_hip_joint_fixed = model_biped_fixed.getJointId("J_hip_l_yaw");
   base_joint = model_biped.getJointId("root_joint");
   waist_yaw_joint = model_biped.getJointId("J_waist_yaw");
+  nominal_inertias_biped = model_biped.inertias;
 
   // read joint pvt parameters
   Json::Reader reader;
@@ -74,6 +77,32 @@ Pin_KinDyn::Pin_KinDyn(std::string urdf_pathIn) {
   tauJointOld = Eigen::VectorXd::Zero(motorName.size());
 }
 
+bool Pin_KinDyn::isLegJoint(pinocchio::JointIndex joint_id) const {
+  return (joint_id >= l_hip_roll_joint && joint_id <= l_ankle_joint) ||
+         (joint_id >= r_hip_roll_joint && joint_id <= r_ankle_joint);
+}
+
+void Pin_KinDyn::applyLegInertiaScale(double scale) {
+  lambda_leg_scale = scale;
+  model_biped.inertias = nominal_inertias_biped;
+
+  for (pinocchio::JointIndex joint_id = 1;
+       joint_id < static_cast<pinocchio::JointIndex>(model_biped.inertias.size());
+       ++joint_id) {
+    if (!isLegJoint(joint_id)) {
+      continue;
+    }
+
+    const pinocchio::Inertia &nominal_inertia = nominal_inertias_biped[joint_id];
+    model_biped.inertias[joint_id] =
+        pinocchio::Inertia(scale * nominal_inertia.mass(),
+                           nominal_inertia.lever(),
+                           scale * nominal_inertia.inertia());
+  }
+
+  data_biped = pinocchio::Data(model_biped);
+}
+
 void Pin_KinDyn::dataBusRead(const DataBus &robotState) {
   //  For Pinocchio: The base translation part is expressed in the parent frame
   //  (here the world coordinate system) while its velocity is expressed in the
@@ -84,7 +113,6 @@ void Pin_KinDyn::dataBusRead(const DataBus &robotState) {
   //  joint_velocities]
   q = robotState.q;
   dq = robotState.dq;
-  lambda_leg_scale = robotState.lambda_leg_scale;
   dq.block(0, 0, 3, 1) = robotState.base_rot.transpose() * dq.block(0, 0, 3, 1);
   dq.block(3, 0, 3, 1) = robotState.base_rot.transpose() * dq.block(3, 0, 3, 1);
   ddq = robotState.ddq;
@@ -136,15 +164,10 @@ void Pin_KinDyn::dataBusWrite(DataBus &robotState) {
   robotState.pCoM_W = CoM_pos;
   robotState.Jcom_W = Jcom;
 
-  robotState.inertia = inertia; // w.r.t body frame
+  robotState.inertia = inertia;
   robotState.tau_non_com = tau_non_com;
   robotState.controller_mass = controller_mass;
   robotState.controller_leg_mass = controller_leg_mass;
-  robotState.dyn_dAg_block = dyn_dAg_block;
-  robotState.h_angular = h_angular;
-  robotState.omega_W = omega_W;
-  robotState.Ig_contrib = Ig_contrib;
-  robotState.mass_contrib = mass_contrib;
 }
 
 // update jacobians and joint positions
@@ -327,36 +350,16 @@ void Pin_KinDyn::computeDyn() {
   pinocchio::ccrba(model_biped, data_biped, q, dq);
   inertia = data_biped.Ig.inertia().matrix();
 
-  // Reconstruct the centroidal inertia from per-link terms so experiment 1 can
-  // rescale both legs with the user-defined lambda.
-  inertia.setZero();
+  // The model inertia has already been scaled at startup. Summarize the
+  // resulting total mass and bilateral leg mass directly from the active model.
   controller_mass = 0.0;
   controller_leg_mass = 0.0;
 
-  // Extract each link contribution to the centroidal inertia tensor.
-  Ig_contrib.assign(model_biped.nv + 1, Eigen::Matrix3d::Zero());
-  mass_contrib.assign(model_biped.nv + 1, 0.0);
-  for (int i = 1; i < model_biped.joints.size(); i++) {
-    // 获取第 i 个 joint (连杆) 的质量与空间变换
-    const bool is_leg_joint =
-        (i >= l_hip_roll_joint && i <= l_ankle_joint) ||
-        (i >= r_hip_roll_joint && i <= r_ankle_joint);
-    const double scale = is_leg_joint ? lambda_leg_scale : 1.0;
-    double m_i = scale * model_biped.inertias[i].mass();
-    Eigen::Matrix3d I_local = scale * model_biped.inertias[i].inertia();
-    auto R_i = data_biped.oMi[i].rotation();    // 在世界系下的旋转矩阵
-    auto p_i = data_biped.oMi[i].translation(); // 刚体在世界系下的绝对坐标
-    auto com_global = data_biped.com[0];        // 全系统质心坐标
-    Eigen::Vector3d d_i = p_i - com_global;     // 从全系统质心指向刚体的向量
-
-    // 平行轴定理: I_contrib = R_i * I_local * R_i^T + m_i * (d^T*d * I - d*d^T)
-    Eigen::Matrix3d I_rot = R_i * I_local * R_i.transpose();
-    Eigen::Matrix3d I_parr = m_i * (d_i.dot(d_i) * Eigen::Matrix3d::Identity() -
-                                    d_i * d_i.transpose());
-
-    Ig_contrib[i] = I_rot + I_parr;
-    mass_contrib[i] = m_i;
-    inertia += Ig_contrib[i];
+  for (pinocchio::JointIndex i = 1;
+       i < static_cast<pinocchio::JointIndex>(model_biped.inertias.size());
+       ++i) {
+    const bool is_leg_joint = isLegJoint(i);
+    const double m_i = model_biped.inertias[i].mass();
     controller_mass += m_i;
     if (is_leg_joint) {
       controller_leg_mass += m_i;
@@ -364,17 +367,14 @@ void Pin_KinDyn::computeDyn() {
   }
 
   // Compute the nonlinear centroidal feedforward term used by the MPC.
-  // tau_non = \dot{I}_g \omega + \omega \times (I_g \omega) = dAg_angular * dq
-  // + (omega x (Ig * omega)) // 简化计算 在 Pinocchio
-  // 中，更直接且物理精确的做法是提取质心角动量变化率中不包含关节微商的纯非线性部分
-  // 为了简化并严格对齐代码底层能力：直接提取 Centroidal Momentum Rate
-  // 为了简化并严格对齐代码底层能力：利用 Centroidal Momentum Matrix 手动计算
-  omega_W << dq(3), dq(4), dq(5);
-  h_angular = inertia * omega_W;
-  // 这里采用严谨的科氏反馈：角动量变化率中的非线性漂移
-  dyn_dAg_block =
-      dyn_dAg.block(3, 0, 3, model_biped.nv); // 保存供打印用的科氏阵分块
-  tau_non_com = dyn_dAg_block * dq + omega_W.cross(h_angular);
+  // This keeps the full angular momentum contribution h_ang = Ag_ang * dq,
+  // including swing-leg joint velocities, instead of approximating it by
+  // inertia * omega only.
+  const Eigen::Vector3d omega_world = dq.block<3, 1>(3, 0);
+  const Eigen::MatrixXd Ag_ang = dyn_Ag.block(3, 0, 3, model_biped.nv);
+  const Eigen::MatrixXd dAg_ang = dyn_dAg.block(3, 0, 3, model_biped.nv);
+  const Eigen::Vector3d h_angular = Ag_ang * dq;
+  tau_non_com = dAg_ang * dq + omega_world.cross(h_angular);
 
   // cal CoM
   CoM_pos = data_biped.com[0];

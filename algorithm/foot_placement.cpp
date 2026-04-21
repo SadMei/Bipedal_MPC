@@ -95,87 +95,87 @@ void FootPlacement::getSwingPos() {
 	// 步骤 2: 迭代求解耦合问题 (Coupling Solver)
 	// =================================================================
 
-	// 定时器判断
-	timer++;
-	bool use_bio = (timer > 0 && use_bio_height && !l_hip_pitch_hist.empty() && phi < 1.0);
-	use_bio = 0;
-	if (use_bio) {
-		// 迭代初始化
-		// 当前时刻的 XY 目标 (基于 Raibert 理想终点插值)
-		double s_xy = (phi - sin( 2 * 3.1415 * phi)/( 2 * 3.1415));
-		if (phi >= 1.0) s_xy = 1.0;
+// 	// 定时器判断
+// 	timer++;
+// 	bool use_bio = (timer > 0 && use_bio_height && !l_hip_pitch_hist.empty() && phi < 1.0);
+// 	use_bio = 0;
+// 	if (use_bio) {
+// 		// 迭代初始化
+// 		// 当前时刻的 XY 目标 (基于 Raibert 理想终点插值)
+// 		double s_xy = (phi - sin( 2 * 3.1415 * phi)/( 2 * 3.1415));
+// 		if (phi >= 1.0) s_xy = 1.0;
 
-		Eigen::Vector3d pDes_Iter = posDes_Ideal; // 初始猜测：终点就是 Raibert 点
+// 		Eigen::Vector3d pDes_Iter = posDes_Ideal; // 初始猜测：终点就是 Raibert 点
 
-		// 当前时刻的目标位置 pDesCur (需要迭代更新)
-		double pDesCur_X = posStart_W(0) + (pDes_Iter(0) - posStart_W(0)) * s_xy;
-		double pDesCur_Y = posStart_W(1) + (pDes_Iter(1) - posStart_W(1)) * s_xy;
-		double pDesCur_Z = posStart_W(2); // 初值不重要
+// 		// 当前时刻的目标位置 pDesCur (需要迭代更新)
+// 		double pDesCur_X = posStart_W(0) + (pDes_Iter(0) - posStart_W(0)) * s_xy;
+// 		double pDesCur_Y = posStart_W(1) + (pDes_Iter(1) - posStart_W(1)) * s_xy;
+// 		double pDesCur_Z = posStart_W(2); // 初值不重要
 
-		double v_norm = curV_W.norm();
+// 		double v_norm = curV_W.norm();
 
-		// A. 获取历史髋关节 (输入 1)
-		double q_hip_delayed = (legState == DataBus::LSt) ? r_hip_pitch_hist.back() : l_hip_pitch_hist.back();
+// 		// A. 获取历史髋关节 (输入 1)
+// 		double q_hip_delayed = (legState == DataBus::LSt) ? r_hip_pitch_hist.back() : l_hip_pitch_hist.back();
 
-		// B. 计算仿生膝关节 (Synergy)
-		double q_knee_bio = getBioInspiredKnee(q_hip_delayed, v_norm);
+// 		// B. 计算仿生膝关节 (Synergy)
+// 		double q_knee_bio = getBioInspiredKnee(q_hip_delayed, v_norm);
 
-		// C. 计算仿生腿长
-		double L_bio_sq = l_thigh * l_thigh + l_shank * l_shank + 2 * l_thigh * l_shank * std::cos(q_knee_bio);
-		// 安全钳位，防止膝盖反向弯曲等数学错误
-		if(L_bio_sq < 0.01) L_bio_sq = 0.01;
-//		double L_bio = std::sqrt(L_bio_sq);
+// 		// C. 计算仿生腿长
+// 		double L_bio_sq = l_thigh * l_thigh + l_shank * l_shank + 2 * l_thigh * l_shank * std::cos(q_knee_bio);
+// 		// 安全钳位，防止膝盖反向弯曲等数学错误
+// 		if(L_bio_sq < 0.01) L_bio_sq = 0.01;
+// //		double L_bio = std::sqrt(L_bio_sq);
 
-		// D. 计算当前需要的水平距离(基于本次迭代的 XY 目标)
-		double dx = pDesCur_X - hipPos_W[0];
-		double dy = pDesCur_Y - hipPos_W[1];
-		double dist_horz_sq = dx * dx + dy * dy;
+// 		// D. 计算当前需要的水平距离(基于本次迭代的 XY 目标)
+// 		double dx = pDesCur_X - hipPos_W[0];
+// 		double dy = pDesCur_Y - hipPos_W[1];
+// 		double dist_horz_sq = dx * dx + dy * dy;
 
 
-		pDesCur_Z = hipPos_W[2] - std::sqrt(L_bio_sq - dist_horz_sq);
+// 		pDesCur_Z = hipPos_W[2] - std::sqrt(L_bio_sq - dist_horz_sq);
 
-		// F. 落地融合 (Touchdown Blending)
-		// 无论仿生怎么算，最后必须回归地面
+// 		// F. 落地融合 (Touchdown Blending)
+// 		// 无论仿生怎么算，最后必须回归地面
 
-		double z_ground = posDes_Ideal(2);
-		double blend_ratio = 0.0;
-		if (phi > 0.75) {
-			blend_ratio = (phi - 0.75) / 0.25;
-		}
-		pDesCur_Z = (1.0 - blend_ratio) * pDesCur_Z + blend_ratio * z_ground;
+// 		double z_ground = posDes_Ideal(2);
+// 		double blend_ratio = 0.0;
+// 		if (phi > 0.75) {
+// 			blend_ratio = (phi - 0.75) / 0.25;
+// 		}
+// 		pDesCur_Z = (1.0 - blend_ratio) * pDesCur_Z + blend_ratio * z_ground;
 
-		// 安全钳位
-		if (pDesCur_Z < 0.02) pDesCur_Z = 0.02;
+// 		// 安全钳位
+// 		if (pDesCur_Z < 0.02) pDesCur_Z = 0.02;
 
-		// 赋值
-		pDesCur[0] = pDesCur_X;
-		pDesCur[1] = pDesCur_Y;
-		pDesCur[2] = pDesCur_Z;
+// 		// 赋值
+// 		pDesCur[0] = pDesCur_X;
+// 		pDesCur[1] = pDesCur_Y;
+// 		pDesCur[2] = pDesCur_Z;
 
-		// 最终目标 posDes_W 保持为 Raibert 理想值 (为了让 MPC 知道我们的长期意图)
-		posDes_W = posDes_Ideal;
+// 		// 最终目标 posDes_W 保持为 Raibert 理想值 (为了让 MPC 知道我们的长期意图)
+// 		posDes_W = posDes_Ideal;
 
-	}
-	else
-	{
+// 	}
+// 	else
+// 	{
 		// 降级模式 (Standard)
 		posDes_W = posDes_Ideal;
 		double s_xy = (phi - sin(2*3.1415*phi)/(2*3.1415));
 		pDesCur[0]=posStart_W(0)+(posDes_W(0)-posStart_W(0)) * s_xy;
 		pDesCur[1]=posStart_W(1)+(posDes_W(1)-posStart_W(1)) * s_xy;
 		pDesCur[2] = posStart_W(2)+Trajectory(0.2, stepHeight, posDes_W(2)-posStart_W(2));
-	}
-	printcounter++;
-	if(printcounter == 5)
-	{
-		posDes_W = posDes_Ideal;
-		double sxy = (phi - sin(2*3.1415*phi)/(2*3.1415));
-		pDesCur_moni[0] = posStart_W(0)+(posDes_W(0)-posStart_W(0)) * sxy;
-		pDesCur_moni[1] = posStart_W(1)+(posDes_W(1)-posStart_W(1)) * sxy;
-		pDesCur_moni[2] = posStart_W(2)+Trajectory(0.2, stepHeight, posDes_W(2)-posStart_W(2));
-		serial1.sendFormattedData("%f,%f,%f,%f,%f,%f,%d\r\n",pDesCur[0] ,pDesCur_moni[0],pDesCur[1],pDesCur_moni[1], pDesCur[2],pDesCur_moni[2],timer);
-		printcounter = 0;
-	}
+// 	}
+// 	printcounter++;
+// 	if(printcounter == 5)
+// 	{
+// 		posDes_W = posDes_Ideal;
+// 		double sxy = (phi - sin(2*3.1415*phi)/(2*3.1415));
+// 		pDesCur_moni[0] = posStart_W(0)+(posDes_W(0)-posStart_W(0)) * sxy;
+// 		pDesCur_moni[1] = posStart_W(1)+(posDes_W(1)-posStart_W(1)) * sxy;
+// 		pDesCur_moni[2] = posStart_W(2)+Trajectory(0.2, stepHeight, posDes_W(2)-posStart_W(2));
+// 		serial1.sendFormattedData("%f,%f,%f,%f,%f,%f,%d\r\n",pDesCur[0] ,pDesCur_moni[0],pDesCur[1],pDesCur_moni[1], pDesCur[2],pDesCur_moni[2],timer);
+// 		printcounter = 0;
+// 	}
 }
 
 double FootPlacement::Trajectory(double phase, double hei, double len){

@@ -20,6 +20,7 @@ Feel free to use in any purpose, and cite OpenLoong-Dynamics-Control in any styl
 #include "foot_placement.h"
 #include "joystick_interpreter.h"
 #include <cstdint>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -64,6 +65,55 @@ void writeSummaryHeaderIfNeeded(const std::string &file_path) {
   out << "exp_id,exp_name,use_variable_inertia,use_tau_bias,lambda_leg_scale,"
          "target_speed_x,push_force,push_start_time,push_duration,stable_steps,"
          "fall_detected,fall_time,final_time,controller_mass,controller_leg_mass\n";
+}
+
+void applyMuJoCoLegInertiaScale(mjModel *model, mjData *data,
+                                double lambda_leg_scale) {
+  static constexpr std::array<const char *, 12> kLegBodyNames = {
+      "Link_hip_l_roll",   "Link_hip_l_yaw",   "Link_hip_l_pitch",
+      "Link_knee_l_pitch", "Link_ankle_l_pitch", "Link_ankle_l_roll",
+      "Link_hip_r_roll",   "Link_hip_r_yaw",   "Link_hip_r_pitch",
+      "Link_knee_r_pitch", "Link_ankle_r_pitch", "Link_ankle_r_roll"};
+
+  static bool initialized = false;
+  static std::array<int, kLegBodyNames.size()> body_ids{};
+  static std::array<mjtNum, kLegBodyNames.size()> nominal_body_mass{};
+  static std::array<std::array<mjtNum, 3>, kLegBodyNames.size()>
+      nominal_body_inertia{};
+
+  if (!initialized) {
+    for (size_t idx = 0; idx < kLegBodyNames.size(); ++idx) {
+      const int body_id = mj_name2id(model, mjOBJ_BODY, kLegBodyNames[idx]);
+      body_ids[idx] = body_id;
+      if (body_id < 0) {
+        std::cerr << "MuJoCo body not found for lambda scaling: "
+                  << kLegBodyNames[idx] << std::endl;
+        continue;
+      }
+
+      nominal_body_mass[idx] = model->body_mass[body_id];
+      for (int axis = 0; axis < 3; ++axis) {
+        nominal_body_inertia[idx][axis] = model->body_inertia[3 * body_id + axis];
+      }
+    }
+    initialized = true;
+  }
+
+  for (size_t idx = 0; idx < body_ids.size(); ++idx) {
+    const int body_id = body_ids[idx];
+    if (body_id < 0) {
+      continue;
+    }
+
+    model->body_mass[body_id] = nominal_body_mass[idx] * lambda_leg_scale;
+    for (int axis = 0; axis < 3; ++axis) {
+      model->body_inertia[3 * body_id + axis] =
+          nominal_body_inertia[idx][axis] * lambda_leg_scale;
+    }
+  }
+
+  mj_setConst(model, data);
+  mj_resetData(model, data);
 }
 } // namespace
 
@@ -122,6 +172,8 @@ int main(int argc, char **argv) {
       "../record/exp" + std::to_string(static_cast<int>(exp));
   const std::string summary_path = "../record/exp_summary.csv";
 
+  applyMuJoCoLegInertiaScale(mj_model, mj_data, lambda_leg_scale);
+
   writeSummaryHeaderIfNeeded(summary_path);
   DataLogger logger(exp_tag + "_datalog.log");
   std::ofstream trace_file(exp_tag + "_trace.csv", std::ios::out);
@@ -137,6 +189,7 @@ int main(int argc, char **argv) {
   UIctr uiController(mj_model, mj_data);
   MJ_Interface mj_interface(mj_model, mj_data);
   Pin_KinDyn kinDynSolver("../models/AzureLoong.urdf");
+  kinDynSolver.applyLegInertiaScale(lambda_leg_scale);
   DataBus RobotState(kinDynSolver.model_nv);
   WBC_priority WBC_solv(kinDynSolver.model_nv, 18, 22, 0.7,
                         mj_model->opt.timestep);
@@ -419,6 +472,8 @@ int main(int argc, char **argv) {
                  << RobotState.vel_track_error << ","
                  << RobotState.torso_angle_error << ","
                  << RobotState.tau_bias_norm << ","
+                 << RobotState.controller_mass << ","
+                 << RobotState.controller_leg_mass << ","
                  << (RobotState.fall_detected ? 1 : 0) << "\n";
 
       if (RobotState.fall_detected) {

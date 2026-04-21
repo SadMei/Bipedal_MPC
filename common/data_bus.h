@@ -68,14 +68,6 @@ struct DataBus {
   Eigen::VectorXd dyn_G, dyn_Non;
   Eigen::Vector3d base_omega_L, base_omega_W, base_rpy;
 
-  // Centroidal dynamics terms used by the MPC layer
-  Eigen::MatrixXd dyn_dAg_block;
-  Eigen::Vector3d h_angular;
-  Eigen::Vector3d omega_W;
-  std::vector<Eigen::Matrix3d>
-      Ig_contrib; // 每个刚体对局部质心的转动惯量贡献 (含平行轴定理)
-  std::vector<double> mass_contrib; // 每个刚体的质量
-
   Eigen::Vector3d slop;
   Eigen::Matrix<double, 3, 3> inertia;
   double controller_mass{77.35};
@@ -95,7 +87,7 @@ struct DataBus {
   double vel_track_error{0.0};
   double torso_angle_error{0.0};
   double tau_bias_norm{0.0};
-  Eigen::Vector3d tau_non_com; // 质心动力学的非线性前馈补偿项，供MPC使用
+  Eigen::Vector3d tau_non_com; // nonlinear centroidal feedforward term for MPC
 
   // cmd value from the joystick interpreter
   Eigen::Vector3d js_eul_des;
@@ -190,11 +182,7 @@ struct DataBus {
     des_ddq = Eigen::VectorXd::Zero(model_nv);
     des_dq = Eigen::VectorXd::Zero(model_nv);
     des_delta_q = Eigen::VectorXd::Zero(model_nv);
-    dyn_dAg_block = Eigen::MatrixXd::Zero(3, model_nv);
-    h_angular.setZero();
-    omega_W.setZero();
-    Ig_contrib.assign(model_nv + 2, Eigen::Matrix3d::Zero());
-    mass_contrib.assign(model_nv + 2, 0.0);
+    
     base_rpy_des.setZero();
     base_pos_des.setZero();
     js_eul_des.setZero();

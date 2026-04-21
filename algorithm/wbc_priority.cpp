@@ -815,9 +815,9 @@ void WBC_priority::computeDdq(Pin_KinDyn& pinKinDynIn)
 //	printcounter++;
 //	if(printcounter == 5)
 //	{
-////				printf("%f,%f,%f,%f,%f\r\n",q_target_l,q(L_KNEE_IDX),q_target_r,q(R_KNEE_IDX),v);
-////				printf("%d\r\n",model_nv);
-////		serial1.sendFormattedData("%f,%f,%f,%f,%f,%f,%f,%d\r\n",q(L_HIP_IDX),q(R_HIP_IDX),-q_target_l,-q(L_KNEE_IDX),-q_target_r,-q(R_KNEE_IDX),v,state);
+//		printf("%f,%f,%f,%f,%f\r\n",q_target_l,q(L_KNEE_IDX),q_target_r,q(R_KNEE_IDX),v);
+//		printf("%d\r\n",model_nv);
+//		serial1.sendFormattedData("%f,%f,%f,%f,%f,%f,%f,%d\r\n",q(L_HIP_IDX),q(R_HIP_IDX),-q_target_l,-q(L_KNEE_IDX),-q_target_r,-q(R_KNEE_IDX),v,state);
 //		serial1.sendFormattedData("%f,%f,%f,%f\r\n",q(L_HIP_IDX),q(R_HIP_IDX),-q(L_KNEE_IDX),-q(R_KNEE_IDX));
 //		printcounter = 0;
 //	}
@@ -832,7 +832,7 @@ void WBC_priority::computeDdq(Pin_KinDyn& pinKinDynIn)
 //        kin_tasks_stand.taskLib[id].kp = Eigen::MatrixXd::Identity(12, 12) * 0;
 //        kin_tasks_stand.taskLib[id].kd = Eigen::MatrixXd::Identity(12, 12) * 0;
 //        kin_tasks_stand.taskLib[id].J=Jfe;
-//            kin_tasks_stand.taskLib[id].J.block(0,22,12,3).setZero(); // exculde waist joints
+//        kin_tasks_stand.taskLib[id].J.block(0,22,12,3).setZero(); // exculde waist joints
 //        kin_tasks_stand.taskLib[id].dJ = dJfe;
 //        kin_tasks_stand.taskLib[id].W.diagonal() = Eigen::VectorXd::Ones(model_nv);
 
