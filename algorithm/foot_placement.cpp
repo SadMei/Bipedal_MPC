@@ -27,6 +27,7 @@ void FootPlacement::dataBusRead(DataBus &robotState) {
 	omegaZ_W=robotState.base_omega_W(2);
 	hip_width=robotState.width_hips;
 	legState=robotState.legState;
+	stepCount=robotState.step_count;
 
 	// --- 缓冲逻辑 ---
 	q_current = robotState.q;
@@ -81,8 +82,13 @@ void FootPlacement::getSwingPos() {
 	posDes_Ideal(0)+=0.5*hip_width* (cos(thetaF)-cos(yawCur+theta0));
 	posDes_Ideal(1)+=0.5*hip_width* (sin(thetaF)-sin(yawCur+theta0));
 
-	// 偏置
-	double xOff_L=-0.01; double yOff_L=0.01; double zOff_W=-0.035;
+		// Keep the first swing conservative to reduce the start-up side step.
+		const bool isFirstSwing = (stepCount == 0);
+		const double firstStepScale =
+			isFirstSwing ? firstStepLateralBiasScale : 1.0;
+		const double firstStepHeight =
+			stepHeight * (isFirstSwing ? firstStepHeightScale : 1.0);
+		double xOff_L=-0.01; double yOff_L=0.01 * firstStepScale; double zOff_W=-0.035;
 	double xOff_W = (legState==DataBus::LSt) ? (cos(yawCur)*xOff_L - sin(yawCur)*yOff_L) : (cos(yawCur)*xOff_L - sin(yawCur)*(-yOff_L));
 	double yOff_W = (legState==DataBus::LSt) ? (sin(yawCur)*xOff_L + cos(yawCur)*yOff_L) : (sin(yawCur)*xOff_L + cos(yawCur)*(-yOff_L));
 	posDes_Ideal(0)+= xOff_W;
@@ -163,7 +169,7 @@ void FootPlacement::getSwingPos() {
 		double s_xy = (phi - sin(2*3.1415*phi)/(2*3.1415));
 		pDesCur[0]=posStart_W(0)+(posDes_W(0)-posStart_W(0)) * s_xy;
 		pDesCur[1]=posStart_W(1)+(posDes_W(1)-posStart_W(1)) * s_xy;
-		pDesCur[2] = posStart_W(2)+Trajectory(0.2, stepHeight, posDes_W(2)-posStart_W(2));
+		pDesCur[2] = posStart_W(2)+Trajectory(0.2, firstStepHeight, posDes_W(2)-posStart_W(2));
 // 	}
 // 	printcounter++;
 // 	if(printcounter == 5)

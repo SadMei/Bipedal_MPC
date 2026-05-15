@@ -14,11 +14,13 @@ Feel free to use in any purpose, and cite OpenLoong-Dynamics-Control in any styl
 
 class FootPlacement {
  public:
-	double kp_vx{0}, kp_vy{0}, kp_wz{0};
-	double legLength{1};
-	double stepHeight{0.1};
-	double phi{0};    // phase varialbe for trajectory generation, must between 0 and 1
-	double tSwing{0.4}; // swing time
+		double kp_vx{0}, kp_vy{0}, kp_wz{0};
+		double legLength{1};
+		double stepHeight{0.1};
+		double firstStepLateralBiasScale{0.25};
+		double firstStepHeightScale{0.6};
+		double phi{0};    // phase varialbe for trajectory generation, must between 0 and 1
+		double tSwing{0.4}; // swing time
 
 	// --- 仿生控制参数 ---
 	double retraction_ratio{0.1};
@@ -64,5 +66,6 @@ class FootPlacement {
 	double omegaZ_W;
 	double hip_width;
 
-	uint8_t printcounter = 0;
-};
+		uint8_t printcounter = 0;
+		uint32_t stepCount{0};
+	};

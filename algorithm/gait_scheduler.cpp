@@ -17,6 +17,7 @@ GaitScheduler::GaitScheduler(double tSwingIn, double dtIn) {
     legState=DataBus::RSt;
     motionState=DataBus::Stand;
     enableNextStep= false;
+    touchDown=false;
 }
 
 void GaitScheduler::dataBusRead(const DataBus &robotState) {
@@ -162,10 +163,6 @@ void GaitScheduler::step() {
         legStateNext = DataBus::LSt;
     }
 }
-
-
-
-
 
 
 

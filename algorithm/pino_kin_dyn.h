@@ -18,8 +18,10 @@ in any style, to contribute to the advancement of the community.
 #include "pinocchio/algorithm/joint-configuration.hpp"
 #include "pinocchio/algorithm/kinematics.hpp"
 #include "pinocchio/algorithm/rnea.hpp"
+#include "pinocchio/container/aligned-vector.hpp"
 #include "pinocchio/parsers/urdf.hpp"
 #include "json/json.h"
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -80,7 +82,11 @@ public:
   Eigen::Vector3d CoM_pos;
   Eigen::Matrix3d inertia;
   Eigen::Vector3d tau_non_com;
+  Eigen::Vector3d tau_non_idot_omega;
+  Eigen::Vector3d tau_non_gyro;
   double lambda_leg_scale{1.0};
+  double leg_mass_fraction{0.38607619909502255};
+  double nominal_leg_mass_fraction{0.38607619909502255};
   double controller_mass{77.35};
   double controller_leg_mass{0.0};
 
@@ -94,6 +100,8 @@ public:
 
   Pin_KinDyn(std::string urdf_pathIn);
   void applyLegInertiaScale(double scale);
+  void applyLegMassFraction(double fraction);
+  double getNominalLegMassFraction() const { return nominal_leg_mass_fraction; }
   void dataBusRead(DataBus const &robotState);
   void dataBusWrite(DataBus &robotState);
   void computeJ_dJ();
@@ -114,6 +122,10 @@ public:
 
 private:
   bool isLegJoint(pinocchio::JointIndex joint_id) const;
-  std::vector<pinocchio::Inertia> nominal_inertias_biped;
-  pinocchio::Data data_biped, data_biped_fixed;
+  void computeNominalMassProperties();
+  pinocchio::container::aligned_vector<pinocchio::Inertia> nominal_inertias_biped;
+  double nominal_total_mass{0.0};
+  double nominal_leg_mass{0.0};
+  double nominal_non_leg_mass{0.0};
+  pinocchio::Data data_biped, data_biped_fixed, data_biped_inertia_fd;
 };

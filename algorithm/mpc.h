@@ -13,7 +13,7 @@ in any style, to contribute to the advancement of the community.
 #include <Eigen/Dense>
 #include <iostream>
 
-const uint16_t mpc_N = 10;
+const uint16_t mpc_N = 20;
 const uint16_t ch = 3;
 const uint16_t nx = 12;
 const uint16_t nu = 13;
@@ -56,8 +56,8 @@ private:
   Eigen::Matrix<double, nx, 1> Cc, C;
 
   Eigen::Matrix<double, nx * mpc_N, nx> Aqp;
-  Eigen::Matrix<double, nx * mpc_N, nx * mpc_N> Aqp1;
-  Eigen::Matrix<double, nx * mpc_N, nu * mpc_N> Bqp1;
+  Eigen::MatrixXd Aqp1;
+  Eigen::MatrixXd Bqp1;
   Eigen::Matrix<double, nx * mpc_N, nu * ch> Bqp;
   Eigen::Matrix<double, nx * mpc_N, 1> Cqp1;
   Eigen::Matrix<double, nx * mpc_N, 1> Cqp;
@@ -90,6 +90,7 @@ private:
   Eigen::Matrix<double, 3, 3> nominal_Ig;
   Eigen::Matrix<double, 3, 3> Ig;
   Eigen::Matrix<double, 3, 1> tau_non;
+  bool inertia_is_world_aligned{false};
 
   Eigen::Matrix<double, 3, 3> R_curz[mpc_N];
   Eigen::Matrix<double, 3, 3> R_cur;
@@ -97,7 +98,7 @@ private:
 
   int legStateCur;
   int legStateNext;
-  int legState[10];
+  int legState[mpc_N];
   double dt;
 
   // qpOASES

@@ -8,6 +8,7 @@ in any style, to contribute to the advancement of the community.
 */
 #include "mpc.h"
 #include "useful_math.h"
+#include <algorithm>
 
 /**
  * @brief MPC类的构造函数
@@ -62,8 +63,8 @@ MPC::MPC(double dtIn) : QP(nu * ch, nc * ch) {
 
   // --- QP问题构建所需的大矩阵初始化 ---
   Aqp.setZero();  // 将当前状态映射到未来所有状态的矩阵
-  Aqp1.setZero(); // 用于构建Bqp的中间矩阵
-  Bqp1.setZero(); // 用于构建Bqp的中间矩阵
+  Aqp1.setZero(nx * mpc_N, nx * mpc_N); // 用于构建Bqp的中间矩阵
+  Bqp1.setZero(nx * mpc_N, nu * mpc_N); // 用于构建Bqp的中间矩阵
   Bqp.setZero();  // 将控制输入映射到未来所有状态的矩阵
   Cqp1.setZero();
   Cqp.setZero();
@@ -102,6 +103,10 @@ MPC::MPC(double dtIn) : QP(nu * ch, nc * ch) {
   // --- 初始化QP求解器 qpOASES ---
   nominal_Ig << 12.61, 0.0, 0.01, 0.0, 11.15, 0.01, 0.01, 0.01, 2.15;
   Ig = nominal_Ig;
+  tau_non.setZero();
+  qp_Status = 0;
+  qp_nWSR = 0;
+  qp_cpuTime = 0.0;
 
   qpOASES::Options option;
   option.printLevel = qpOASES::PL_LOW; // 设置求解器输出信息的级别为低
@@ -240,15 +245,29 @@ void MPC::dataBusRead(DataBus &Data) {
 
   if (Data.use_variable_inertia_model) {
     Ig = Data.inertia;
+    inertia_is_world_aligned = true;
   } else {
     Ig = nominal_Ig;
+    inertia_is_world_aligned = false;
   }
   // 更新机身惯量矩阵 Ic
   //	Ig << 12.61,  0    , 0.01
-  //		    ,0   ,  11.15, 0.01
-  //		    ,0.37,  0.01 , 2.15;
+  //		  ,0   ,  11.15, 0.01
+  //		  ,0.37,  0.01 , 2.15;
 
-  tau_non = Data.use_tau_bias_feedforward ? Data.tau_non_com : Eigen::Vector3d::Zero();
+  const Eigen::Vector3d tau_non_raw =
+      Data.use_tau_bias_feedforward ? Data.tau_non_com : Eigen::Vector3d::Zero();
+  if (Data.use_tau_bias_feedforward && tau_non_raw.allFinite()) {
+    tau_non = tau_non_raw;
+    constexpr double kTauNonNormLimit = 60.0; // [N*m]
+    const double tau_norm = tau_non.norm();
+    if (tau_norm > kTauNonNormLimit) {
+      tau_non *= kTauNonNormLimit / tau_norm;
+    }
+  } else {
+    tau_non.setZero();
+  }
+  Data.tau_non_mpc = tau_non;
 
   // --- 4. 预测未来支撑状态 ---
   legStateCur = Data.legState;      // 当前支撑状态 (左/右/双支撑)
@@ -297,11 +316,14 @@ void MPC::cal() {
       pf2comi[i] = pf2com;
       Eigen::Matrix3d Ic_W_inv;
 
-      // MODIFIED: 质心动力学核心修改
-      // 将(随构型变化的)总质心惯量张量旋转到世界坐标系下并求逆
-      // 使用 DataBus 传入的实时 Ig，替代了之前固定的 Ic
-      // Ig 的变化反映了挥腿、摆臂对整体转动惯量的影响
-      Ic_W_inv = (R_curz[i] * Ig * R_curz[i].transpose()).inverse();
+      // Pinocchio centroidal inertia Ig is already expressed in the CoM frame
+      // aligned with the inertial/world frame. Only the legacy nominal SRBM
+      // inertia needs the extra yaw rotation into the world frame here.
+      if (inertia_is_world_aligned) {
+        Ic_W_inv = Ig.inverse();
+      } else {
+        Ic_W_inv = (R_curz[i] * Ig * R_curz[i].transpose()).inverse();
+      }
 
       // 连续时间模型 Bc
       // 力矩对角速度的影响 (牛顿-欧拉方程)
@@ -574,23 +596,53 @@ void MPC::cal() {
     qp_Status = qpOASES::getSimpleStatus(res);
     qp_nWSR = nWSR;
     qp_cpuTime = cpu_time;
-    if (res != qpOASES::SUCCESSFUL_RETURN) { /* 求解失败处理 */
-    }
-
     // --- 6. 提取并使用优化结果 ---
-    qpOASES::real_t xOpt[nu * ch];
-    QP.getPrimalSolution(xOpt); // 获取最优解
-    if (qp_Status == 0) {       // 如果求解成功
+    if (res == qpOASES::SUCCESSFUL_RETURN && qp_Status == 0) {
+      qpOASES::real_t xOpt[nu * ch];
+      QP.getPrimalSolution(xOpt); // 获取最优解
       for (int i = 0; i < nu * ch; i++)
         Ufe(i) = xOpt[i]; // 将结果存入Ufe向量
+    } else {
+      constexpr double kQpFallbackDecay = 0.90;
+      Eigen::Matrix<double, nu, 1> fallback_u = Ufe_pre;
+      if (!fallback_u.allFinite() || fallback_u.block<12, 1>(0, 0).norm() < 1e-6) {
+        fallback_u = Guess_value.block<nu, 1>(0, 0);
+      }
+      fallback_u *= kQpFallbackDecay;
+
+      auto clearSwingWrench = [](Eigen::Matrix<double, nu, 1> &u,
+                                 int support_state) {
+        if (support_state == DataBus::LSt) {
+          u.block<6, 1>(6, 0).setZero();
+        } else if (support_state == DataBus::RSt) {
+          u.block<6, 1>(0, 0).setZero();
+        }
+      };
+
+      for (int i = 0; i < ch; ++i) {
+        Eigen::Matrix<double, nu, 1> u_i = fallback_u;
+        clearSwingWrench(u_i, legState[i]);
+        for (int j = 0; j < nu; ++j) {
+          if (!std::isfinite(u_i(j))) {
+            u_i(j) = 0.0;
+          }
+          const int idx = i * nu + j;
+          u_i(j) = std::clamp(u_i(j), u_low(idx), u_up(idx));
+        }
+        Ufe.block<nu, 1>(i * nu, 0) = u_i;
+      }
     }
 
     // 使用连续时间模型结合常数偏置（包含前馈）计算状态导数
     // 由于非线性偏置已经在 C_seq 中引入，直接加上 Cc 即可获得真实加速度
     Eigen::Matrix<double, nx, 1> Cc_inst;
     Cc_inst.setZero();
-    Eigen::Matrix3d Ic_W_inv_c =
-        (R_curz[0] * Ig * R_curz[0].transpose()).inverse();
+    Eigen::Matrix3d Ic_W_inv_c;
+    if (inertia_is_world_aligned) {
+      Ic_W_inv_c = Ig.inverse();
+    } else {
+      Ic_W_inv_c = (R_curz[0] * Ig * R_curz[0].transpose()).inverse();
+    }
     Cc_inst.block<3, 1>(6, 0) = -Ic_W_inv_c * tau_non;
     dX_cal = Ac[0] * X_cur + Bc[0] * Ufe.block<nu, 1>(0, 0) + Cc_inst;
 

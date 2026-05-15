@@ -75,10 +75,11 @@ struct DataBus {
 
   // Experiment configuration and plotting-friendly signals
   int exp_id{1};
-  double lambda_leg_scale{1.0};
+  double leg_mass_fraction{0.38607619909502255};
   bool use_variable_inertia_model{true};
   bool use_tau_bias_feedforward{true};
   double target_speed_x{0.0};
+  double target_speed_y{0.0};
   double push_force_cmd{0.0};
   double push_start_time{0.0};
   double push_duration{0.0};
@@ -88,6 +89,9 @@ struct DataBus {
   double torso_angle_error{0.0};
   double tau_bias_norm{0.0};
   Eigen::Vector3d tau_non_com; // nonlinear centroidal feedforward term for MPC
+  Eigen::Vector3d tau_non_mpc; // filtered/clamped tau_non actually injected into MPC
+  Eigen::Vector3d tau_non_idot_omega; // I_G_dot * omega component of tau_non_com
+  Eigen::Vector3d tau_non_gyro;       // omega x (I_G * omega) component of tau_non_com
 
   // cmd value from the joystick interpreter
   Eigen::Vector3d js_eul_des;
@@ -173,12 +177,22 @@ struct DataBus {
     tauJointCmd = Eigen::VectorXd::Zero(model_nv - 6);
     FL_est = Eigen::VectorXd::Zero(6);
     FR_est = Eigen::VectorXd::Zero(6);
-    Xd = Eigen::VectorXd::Zero(12 * 10);
+    Xd = Eigen::VectorXd::Zero(12 * 20);
     X_cur = Eigen::VectorXd::Zero(12);
     X_cal = Eigen::VectorXd::Zero(12);
     dX_cal = Eigen::VectorXd::Zero(12);
     fe_react_tau_cmd = Eigen::VectorXd::Zero(13 * 3);
     Fr_ff = Eigen::VectorXd::Zero(12);
+    qp_nWSR_MPC = 0;
+    qp_cpuTime_MPC = 0.0;
+    qpStatus_MPC = 0;
+    qp_nWSR = 0;
+    qp_cpuTime = 0.0;
+    qp_status = 0;
+    tau_non_com.setZero();
+    tau_non_mpc.setZero();
+    tau_non_idot_omega.setZero();
+    tau_non_gyro.setZero();
     des_ddq = Eigen::VectorXd::Zero(model_nv);
     des_dq = Eigen::VectorXd::Zero(model_nv);
     des_delta_q = Eigen::VectorXd::Zero(model_nv);

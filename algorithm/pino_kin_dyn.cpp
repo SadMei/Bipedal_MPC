@@ -18,6 +18,7 @@ Pin_KinDyn::Pin_KinDyn(std::string urdf_pathIn) {
   pinocchio::urdf::buildModel(urdf_path, model_biped_fixed);
   data_biped = pinocchio::Data(model_biped);
   data_biped_fixed = pinocchio::Data(model_biped_fixed);
+  data_biped_inertia_fd = pinocchio::Data(model_biped);
   model_nv = model_biped.nv;
   J_l = Eigen::MatrixXd::Zero(6, model_nv);
   J_r = Eigen::MatrixXd::Zero(6, model_nv);
@@ -58,6 +59,8 @@ Pin_KinDyn::Pin_KinDyn(std::string urdf_pathIn) {
   base_joint = model_biped.getJointId("root_joint");
   waist_yaw_joint = model_biped.getJointId("J_waist_yaw");
   nominal_inertias_biped = model_biped.inertias;
+  computeNominalMassProperties();
+  leg_mass_fraction = nominal_leg_mass_fraction;
 
   // read joint pvt parameters
   Json::Reader reader;
@@ -82,6 +85,27 @@ bool Pin_KinDyn::isLegJoint(pinocchio::JointIndex joint_id) const {
          (joint_id >= r_hip_roll_joint && joint_id <= r_ankle_joint);
 }
 
+void Pin_KinDyn::computeNominalMassProperties() {
+  nominal_total_mass = 0.0;
+  nominal_leg_mass = 0.0;
+
+  for (pinocchio::JointIndex joint_id = 1;
+       joint_id <
+       static_cast<pinocchio::JointIndex>(nominal_inertias_biped.size());
+       ++joint_id) {
+    const double mass = nominal_inertias_biped[joint_id].mass();
+    nominal_total_mass += mass;
+    if (isLegJoint(joint_id)) {
+      nominal_leg_mass += mass;
+    }
+  }
+
+  nominal_non_leg_mass = nominal_total_mass - nominal_leg_mass;
+  if (nominal_total_mass > 1e-9) {
+    nominal_leg_mass_fraction = nominal_leg_mass / nominal_total_mass;
+  }
+}
+
 void Pin_KinDyn::applyLegInertiaScale(double scale) {
   lambda_leg_scale = scale;
   model_biped.inertias = nominal_inertias_biped;
@@ -97,10 +121,47 @@ void Pin_KinDyn::applyLegInertiaScale(double scale) {
     model_biped.inertias[joint_id] =
         pinocchio::Inertia(scale * nominal_inertia.mass(),
                            nominal_inertia.lever(),
-                           scale * nominal_inertia.inertia());
+                           scale * nominal_inertia.inertia().matrix());
   }
 
   data_biped = pinocchio::Data(model_biped);
+  data_biped_inertia_fd = pinocchio::Data(model_biped);
+}
+
+void Pin_KinDyn::applyLegMassFraction(double fraction) {
+  constexpr double kMinScale = 1e-3;
+  constexpr double kMaxLegMassFraction = 0.8;
+
+  leg_mass_fraction = std::clamp(fraction, 0.0, kMaxLegMassFraction);
+  model_biped.inertias = nominal_inertias_biped;
+
+  const double desired_leg_mass = leg_mass_fraction * nominal_total_mass;
+  const double leg_scale =
+      nominal_leg_mass > 1e-9
+          ? std::max(desired_leg_mass / nominal_leg_mass, kMinScale)
+          : 1.0;
+  const double non_leg_scale =
+      nominal_non_leg_mass > 1e-9
+          ? std::max((nominal_total_mass - leg_scale * nominal_leg_mass) /
+                         nominal_non_leg_mass,
+                     kMinScale)
+          : 1.0;
+
+  for (pinocchio::JointIndex joint_id = 1;
+       joint_id <
+       static_cast<pinocchio::JointIndex>(model_biped.inertias.size());
+       ++joint_id) {
+    const bool is_leg_joint = isLegJoint(joint_id);
+    const double scale = is_leg_joint ? leg_scale : non_leg_scale;
+    const pinocchio::Inertia &nominal_inertia = nominal_inertias_biped[joint_id];
+    model_biped.inertias[joint_id] =
+        pinocchio::Inertia(scale * nominal_inertia.mass(),
+                           nominal_inertia.lever(),
+                           scale * nominal_inertia.inertia().matrix());
+  }
+
+  data_biped = pinocchio::Data(model_biped);
+  data_biped_inertia_fd = pinocchio::Data(model_biped);
 }
 
 void Pin_KinDyn::dataBusRead(const DataBus &robotState) {
@@ -166,6 +227,8 @@ void Pin_KinDyn::dataBusWrite(DataBus &robotState) {
 
   robotState.inertia = inertia;
   robotState.tau_non_com = tau_non_com;
+  robotState.tau_non_idot_omega = tau_non_idot_omega;
+  robotState.tau_non_gyro = tau_non_gyro;
   robotState.controller_mass = controller_mass;
   robotState.controller_leg_mass = controller_leg_mass;
 }
@@ -367,14 +430,38 @@ void Pin_KinDyn::computeDyn() {
   }
 
   // Compute the nonlinear centroidal feedforward term used by the MPC.
-  // This keeps the full angular momentum contribution h_ang = Ag_ang * dq,
-  // including swing-leg joint velocities, instead of approximating it by
-  // inertia * omega only.
-  const Eigen::Vector3d omega_world = dq.block<3, 1>(3, 0);
-  const Eigen::MatrixXd Ag_ang = dyn_Ag.block(3, 0, 3, model_biped.nv);
-  const Eigen::MatrixXd dAg_ang = dyn_dAg.block(3, 0, 3, model_biped.nv);
-  const Eigen::Vector3d h_angular = Ag_ang * dq;
-  tau_non_com = dAg_ang * dq + omega_world.cross(h_angular);
+  // Trial 1: data_biped.Ig is world-aligned, and the finite-difference
+  // derivative below is taken along the full floating-base generalized
+  // velocity. In this case I_G_dot already includes the change of the
+  // world-frame inertia expression due to base rotation, so only inject
+  // I_G_dot * omega into the MPC. Keep the gyroscopic component logged for
+  // comparison, but do not add it to tau_non_com in this trial.
+  // I_G_dot is evaluated as a directional derivative along the current
+  // generalized velocity, which matches d/dt I_G(q(t)) without storing history.
+  constexpr double kInertiaDerivativeDt = 1e-3; // [s]
+  const Eigen::VectorXd q_forward =
+      pinocchio::integrate(model_biped, q, kInertiaDerivativeDt * dq);
+  pinocchio::ccrba(model_biped, data_biped_inertia_fd, q_forward, dq);
+  const Eigen::Matrix3d inertia_forward =
+      data_biped_inertia_fd.Ig.inertia().matrix();
+
+  const Eigen::VectorXd q_backward =
+      pinocchio::integrate(model_biped, q, -kInertiaDerivativeDt * dq);
+  pinocchio::ccrba(model_biped, data_biped_inertia_fd, q_backward, dq);
+  const Eigen::Matrix3d inertia_backward =
+      data_biped_inertia_fd.Ig.inertia().matrix();
+
+  Eigen::Matrix3d inertia_dot =
+      (inertia_forward - inertia_backward) / (2.0 * kInertiaDerivativeDt);
+  inertia_dot = 0.5 * (inertia_dot + inertia_dot.transpose());
+
+  // dq stores the floating-base angular velocity in the base/local frame for
+  // Pinocchio. Convert it back to world coordinates to match data_biped.Ig.
+  const Eigen::Vector3d omega_world = base_rot * dq.block<3, 1>(3, 0);
+  const Eigen::Vector3d angular_momentum = inertia * omega_world;
+  tau_non_idot_omega = inertia_dot * omega_world;
+  tau_non_gyro = omega_world.cross(angular_momentum);
+  tau_non_com = tau_non_idot_omega;
 
   // cal CoM
   CoM_pos = data_biped.com[0];

@@ -387,10 +387,20 @@ void WBC_priority::computeTau()
 //        printf("WBC-QP: init_failed\n");
 
 	qpOASES::real_t xOpt[QP_nv];
-	QP_prob.getPrimalSolution(xOpt);
 	if (res == qpOASES::SUCCESSFUL_RETURN)
+	{
+		QP_prob.getPrimalSolution(xOpt);
 		for (int i = 0; i < QP_nv; i++)
 			eigen_xOpt(i) = xOpt[i];
+	}
+	else
+	{
+		constexpr double kQpFallbackDecay = 0.90;
+		if (eigen_xOpt.allFinite())
+			eigen_xOpt *= kQpFallbackDecay;
+		else
+			eigen_xOpt.setZero();
+	}
 
 	eigen_ddq_Opt = ddq_final_kin;
 	eigen_ddq_Opt.block<6, 1>(0, 0) += eigen_xOpt.block<6, 1>(0, 0);

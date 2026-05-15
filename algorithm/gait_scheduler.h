@@ -45,6 +45,3 @@ private:
     double theta0;
     int model_nv;
 };
-
-
-
