@@ -345,12 +345,12 @@ def write_report(output_dir: Path, rows: list[dict[str, str | int | float]]) -> 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--speeds", default="1.2,1.5,1.8")
-    parser.add_argument("--mass-start", type=float, default=0.60)
+    parser.add_argument("--speeds", default="1.5")
+    parser.add_argument("--mass-start", type=float, default=0.40)
     parser.add_argument("--mass-stop", type=float, default=0.80)
-    parser.add_argument("--mass-step", type=float, default=0.025)
-    parser.add_argument("--repeats", type=int, default=3)
-    parser.add_argument("--tswing", type=float, default=0.40)
+    parser.add_argument("--mass-step", type=float, default=0.05)
+    parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument("--tswing", type=float, default=0.45)
     parser.add_argument("--sim-end-time", type=float, default=30.0)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--skip-build", action="store_true")

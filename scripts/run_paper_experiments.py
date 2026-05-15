@@ -31,6 +31,7 @@ EXECUTABLE = BUILD_DIR / "walk_mpc_wbc"
 NOMINAL_LEG_MASS_FRACTION = 0.38607619909502255
 DEFAULT_SIM_END_TIME = 30.0
 DEFAULT_REPEATS = 5
+DEFAULT_TSWING = 0.45
 ANALYSIS_START_TIME = 3.5
 
 
@@ -256,6 +257,7 @@ def run_condition(cond: Condition, output_dir: Path, index: int, total: int) -> 
             "ODC_EXP": str(cond.exp_id),
             "ODC_USE_VICM": "1" if cond.controller.use_vicm else "0",
             "ODC_USE_TAU_BIAS": "1" if cond.controller.use_tau else "0",
+            "ODC_TSWING": f"{DEFAULT_TSWING:.12g}",
             "ODC_LEG_MASS_FRACTION": f"{cond.leg_mass_fraction:.12g}",
             "ODC_TARGET_SPEED_X": f"{cond.target_speed_x:.12g}",
             "ODC_TARGET_SPEED_Y": f"{cond.target_speed_y:.12g}",
