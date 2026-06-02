@@ -111,6 +111,12 @@ private:
 	double q_target_r,q_target_l;
 	uint16_t delayed = 0; //开始先不执行步态协同，等步态稳定后再执行
 	uint8_t printcounter = 0;
-};
+	double posrot_pos_kp_scale{1.0};
+		double posrot_pos_kd_scale{1.0};
+		double posrot_att_kp_scale{1.0};
+		double posrot_att_kd_scale{1.0};
+		double qp_delta_ddq_weight{1e7};
+		double qp_delta_fr_weight{1e1};
+	};
 
 

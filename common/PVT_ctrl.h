@@ -35,6 +35,7 @@ public:
     void enablePV(int jtId); // enable PV control item
     void disablePV(int jtId); // disable PV control item
     void setJointPD(double kp, double kd, const char * jointName);
+    void setTorqueLimitScale(double scale);
     void dataBusRead(DataBus &busIn);
     void dataBusWrite(DataBus &busIn);
 
@@ -52,6 +53,8 @@ public:
 private:
     std::vector<LPF_Fst> tau_out_lpf;
     std::vector<int> PV_enable;
+    double torqueLimitScale{1.0};
+    double limitTorque(double tauDes, int motorId) const;
     double sign(double in);
     const std::vector<std::string> motorName={"J_arm_l_01","J_arm_l_02","J_arm_l_03", "J_arm_l_04", "J_arm_l_05",
                                               "J_arm_l_06","J_arm_l_07","J_arm_r_01", "J_arm_r_02", "J_arm_r_03",
@@ -61,5 +64,4 @@ private:
                                               "J_ankle_l_pitch", "J_ankle_l_roll", "J_hip_r_roll", "J_hip_r_yaw",
                                               "J_hip_r_pitch", "J_knee_r_pitch", "J_ankle_r_pitch", "J_ankle_r_roll"}; // joint name in urdf and jason config files
 };
-
 

@@ -80,6 +80,19 @@ void PVT_Ctr::setJointPD(double kp, double kd, const char* jointName)
 	pvt_Kd[id] = kd;
 }
 
+void PVT_Ctr::setTorqueLimitScale(double scale)
+{
+	torqueLimitScale = scale > 0.0 ? scale : 1.0;
+}
+
+double PVT_Ctr::limitTorque(double tauDes, int motorId) const
+{
+	const double limit = fabs(maxTor[motorId]) * torqueLimitScale;
+	if (limit > 0.0 && fabs(tauDes) >= limit)
+		return std::copysign(limit, tauDes);
+	return tauDes;
+}
+
 // joint pvt control
 void PVT_Ctr::calMotorsPVT()
 {
@@ -97,8 +110,7 @@ void PVT_Ctr::calMotorsPVT()
 		tauDes = PV_enable[i] * pvt_Kp[i] * (motor_pos_des[i] - motor_pos_cur[i])
 			+ PV_enable[i] * pvt_Kd[i] * (motor_vel_des[i] - motor_vel[i]);
 		tauDes = tau_out_lpf[i].ftOut(tauDes) + motor_tor_des[i];
-		if (fabs(tauDes) >= fabs(maxTor[i]))
-			tauDes = sign(tauDes) * maxTor[i];
+		tauDes = limitTorque(tauDes, i);
 		motor_tor_out[i] = tauDes;
 		motor_pos_des_old[i] = motor_pos_des[i];
 	}
@@ -125,8 +137,7 @@ void PVT_Ctr::calMotorsPVT(double deltaP_Lim)
 		tauDes = PV_enable[i] * pvt_Kp[i] * (pDes - motor_pos_cur[i])
 			+ PV_enable[i] * pvt_Kd[i] * (motor_vel_des[i] - motor_vel[i]);
 		tauDes = tau_out_lpf[i].ftOut(tauDes) + motor_tor_des[i];
-		if (fabs(tauDes) >= fabs(maxTor[i]))
-			tauDes = sign(tauDes) * maxTor[i];
+		tauDes = limitTorque(tauDes, i);
 		motor_tor_out[i] = tauDes;
 		motor_pos_des_old[i] = pDes;
 	}

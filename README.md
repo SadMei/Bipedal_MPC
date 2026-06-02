@@ -213,3 +213,35 @@ DataBus::LegState legState=DataBus::RS;                //初始腾空腿
 [💬 新建讨论](https://atomgit.com/openloong/openloong-dyn-control/discussions/new/choose) | [📝 反馈问题](https://atomgit.com/openloong/openloong-dyn-control/issues/create) | [📨 变更请求](https://atomgit.com/openloong/openloong-dyn-control/changes)
 
 您可以对现有内容进行意见评价、问题反馈、贡献您的原创内容等，对本代码的任何问题及意见，请联系<web@openloong.org.cn>
+
+SnapShot 仿真8个图
+
+![image-20260428211011431](/home/mei/.config/Typora/typora-user-images/image-20260428211011431.png)
+
+动画以附件的方式提交
+
+第五块future work 去掉
+
+Introduction里加TAML的文章
+
+![image-20260428210115349](/home/mei/.config/Typora/typora-user-images/image-20260428210115349.png)
+
+![image-20260428210443407](/home/mei/.config/Typora/typora-user-images/image-20260428210443407.png)
+
+节前说明
+
+![image-20260428210751699](/home/mei/.config/Typora/typora-user-images/image-20260428210751699.png)
+
+R矩阵间距不统一，R = alpha * I
+
+comprison 体现量化结果
+图里标注提升空间
+减少对局限性的描述
+
+![image-20260428211546566](/home/mei/.config/Typora/typora-user-images/image-20260428211546566.png)
+
+12472022去掉，整个修改
+
+推荐审稿人：马鑫，张舒，甘春标
+
+落款张老师青年编委

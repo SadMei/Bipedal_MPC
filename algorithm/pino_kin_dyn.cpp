@@ -35,6 +35,11 @@ Pin_KinDyn::Pin_KinDyn(std::string urdf_pathIn) {
   dq.setZero();
   ddq.setZero();
   Rcur.setIdentity();
+  inertia.setZero();
+  inertia_dot.setZero();
+  tau_non_com.setZero();
+  tau_non_idot_omega.setZero();
+  tau_non_gyro.setZero();
   dyn_M = Eigen::MatrixXd::Zero(model_nv, model_nv);
   dyn_M_inv = Eigen::MatrixXd::Zero(model_nv, model_nv);
   dyn_C = Eigen::MatrixXd::Zero(model_nv, model_nv);
@@ -221,6 +226,7 @@ void Pin_KinDyn::dataBusWrite(DataBus &robotState) {
   robotState.dyn_Ag = dyn_Ag;
   robotState.dyn_dAg = dyn_dAg;
   robotState.dyn_Non = dyn_Non;
+  robotState.inertia_dot = inertia_dot;
 
   robotState.pCoM_W = CoM_pos;
   robotState.Jcom_W = Jcom;
@@ -435,7 +441,7 @@ void Pin_KinDyn::computeDyn() {
   // velocity. In this case I_G_dot already includes the change of the
   // world-frame inertia expression due to base rotation, so only inject
   // I_G_dot * omega into the MPC. Keep the gyroscopic component logged for
-  // comparison, but do not add it to tau_non_com in this trial.
+  // comparison; tau_non_com itself is fixed to I_G_dot * omega.
   // I_G_dot is evaluated as a directional derivative along the current
   // generalized velocity, which matches d/dt I_G(q(t)) without storing history.
   constexpr double kInertiaDerivativeDt = 1e-3; // [s]
@@ -451,7 +457,7 @@ void Pin_KinDyn::computeDyn() {
   const Eigen::Matrix3d inertia_backward =
       data_biped_inertia_fd.Ig.inertia().matrix();
 
-  Eigen::Matrix3d inertia_dot =
+  inertia_dot =
       (inertia_forward - inertia_backward) / (2.0 * kInertiaDerivativeDt);
   inertia_dot = 0.5 * (inertia_dot + inertia_dot.transpose());
 

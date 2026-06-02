@@ -7,10 +7,98 @@ Feel free to use in any purpose, and cite OpenLoong-Dynamics-Control in any styl
 */
 #include "MJ_interface.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+
+namespace {
+double getEnvDouble(const char *name, double default_value) {
+    const char *value = std::getenv(name);
+    if (value == nullptr) {
+        return default_value;
+    }
+    char *end = nullptr;
+    const double parsed = std::strtod(value, &end);
+    return end != value ? parsed : default_value;
+}
+
+double filteredContactForce(double raw_force, double previous_force,
+                          double time_step, double filter_tc,
+                          double clamp_force) {
+    const double nonnegative = std::max(raw_force, 0.0);
+    const double clamped =
+        clamp_force > 0.0 ? std::min(nonnegative, clamp_force) : nonnegative;
+    if (filter_tc <= 0.0) {
+        return clamped;
+    }
+    const double alpha = time_step / (filter_tc + time_step);
+    return previous_force + alpha * (clamped - previous_force);
+}
+
+double contactFrameForceWorldZ(const mjContact &contact,
+                               const mjtNum contact_force[6]) {
+    return contact.frame[2] * contact_force[0] +
+           contact.frame[5] * contact_force[1] +
+           contact.frame[8] * contact_force[2];
+}
+
+bool isFootBody(const mjModel *model, int geom, int foot_body_id_a,
+                int foot_body_id_b) {
+    const int body_id = model->geom_bodyid[geom];
+    return body_id == foot_body_id_a || body_id == foot_body_id_b;
+}
+
+double footContactWorldFz(const mjModel *model, const mjData *data,
+                          int foot_body_id_a, int foot_body_id_b) {
+    double fz = 0.0;
+    for (int contact_id = 0; contact_id < data->ncon; ++contact_id) {
+        const mjContact &contact = data->contact[contact_id];
+        if (contact.exclude || contact.efc_address < 0) {
+            continue;
+        }
+        const int geom0 = contact.geom[0] >= 0 ? contact.geom[0] : contact.geom1;
+        const int geom1 = contact.geom[1] >= 0 ? contact.geom[1] : contact.geom2;
+        if (geom0 < 0 || geom1 < 0) {
+            continue;
+        }
+        const bool foot_is_geom0 =
+            isFootBody(model, geom0, foot_body_id_a, foot_body_id_b);
+        const bool foot_is_geom1 =
+            isFootBody(model, geom1, foot_body_id_a, foot_body_id_b);
+        if (!foot_is_geom0 && !foot_is_geom1) {
+            continue;
+        }
+
+        mjtNum contact_force[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        mj_contactForce(model, data, contact_id, contact_force);
+
+        // MuJoCo's contact normal points from geom[0] to geom[1]. The contact
+        // force returned here is expressed in that contact frame. We use the
+        // world vertical support magnitude for the virtual foot force sensor.
+        const double world_z_on_geom1 =
+            contactFrameForceWorldZ(contact, contact_force);
+        fz += std::abs(world_z_on_geom1);
+    }
+    return fz;
+}
+
+double sensorScalar(const mjModel *model, const mjData *data, int sensor_id) {
+    if (sensor_id < 0) {
+        return 0.0;
+    }
+    const int adr = model->sensor_adr[sensor_id];
+    return adr >= 0 ? data->sensordata[adr] : 0.0;
+}
+} // namespace
+
 MJ_Interface::MJ_Interface(mjModel *mj_modelIn, mjData *mj_dataIn) {
     mj_model=mj_modelIn;
     mj_data=mj_dataIn;
     timeStep=mj_model->opt.timestep;
+    touchForceFilterTc = std::max(0.0, getEnvDouble("ODC_TOUCH_FORCE_FILTER_TC", touchForceFilterTc));
+    touchForceClamp = std::max(0.0, getEnvDouble("ODC_TOUCH_FORCE_CLAMP", touchForceClamp));
+    touchForceFilterTc = std::max(0.0, getEnvDouble("ODC_FOOT_FORCE_FILTER_TC", touchForceFilterTc));
+    touchForceClamp = std::max(0.0, getEnvDouble("ODC_FOOT_FORCE_CLAMP", touchForceClamp));
     jointNum=JointName.size();
     jntId_qpos.assign(jointNum,0);
     jntId_qvel.assign(jointNum,0);
@@ -47,6 +135,12 @@ MJ_Interface::MJ_Interface(mjModel *mj_modelIn, mjData *mj_dataIn) {
     velSensorId= mj_name2id(mj_model,mjOBJ_SENSOR,velSensorName.c_str());
     gyroSensorId= mj_name2id(mj_model,mjOBJ_SENSOR,gyroSensorName.c_str());
     accSensorId= mj_name2id(mj_model,mjOBJ_SENSOR,accSensorName.c_str());
+    leftTouchSensorId= mj_name2id(mj_model,mjOBJ_SENSOR,leftTouchSensorName.c_str());
+    rightTouchSensorId= mj_name2id(mj_model,mjOBJ_SENSOR,rightTouchSensorName.c_str());
+    leftFootPitchBodyId= mj_name2id(mj_model,mjOBJ_BODY,leftFootPitchBodyName.c_str());
+    leftFootRollBodyId= mj_name2id(mj_model,mjOBJ_BODY,leftFootRollBodyName.c_str());
+    rightFootPitchBodyId= mj_name2id(mj_model,mjOBJ_BODY,rightFootPitchBodyName.c_str());
+    rightFootRollBodyId= mj_name2id(mj_model,mjOBJ_BODY,rightFootRollBodyName.c_str());
 
 }
 
@@ -76,6 +170,44 @@ void MJ_Interface::updateSensorValues() {
         baseAngVel[i]=mj_data->sensordata[mj_model->sensor_adr[gyroSensorId]+i];
         baseLinVel[i]=(basePos[i]-posOld)/(mj_model->opt.timestep);
     }
+    const double rawLeftContact =
+        leftFootPitchBodyId >= 0 && leftFootRollBodyId >= 0
+            ? footContactWorldFz(mj_model, mj_data, leftFootPitchBodyId,
+                                 leftFootRollBodyId)
+            : 0.0;
+    const double rawRightContact =
+        rightFootPitchBodyId >= 0 && rightFootRollBodyId >= 0
+            ? footContactWorldFz(mj_model, mj_data, rightFootPitchBodyId,
+                                 rightFootRollBodyId)
+            : 0.0;
+    rawContactFz[0] = rawLeftContact;
+    rawContactFz[1] = rawRightContact;
+    rawTouchForce[0] = sensorScalar(mj_model, mj_data, leftTouchSensorId);
+    rawTouchForce[1] = sensorScalar(mj_model, mj_data, rightTouchSensorId);
+    if (!touchForceFilterInitialized) {
+        touchForceFilt[0] =
+            touchForceClamp > 0.0
+                ? std::min(std::max(rawLeftContact, 0.0), touchForceClamp)
+                : std::max(rawLeftContact, 0.0);
+        touchForceFilt[1] =
+            touchForceClamp > 0.0
+                ? std::min(std::max(rawRightContact, 0.0), touchForceClamp)
+                : std::max(rawRightContact, 0.0);
+        touchForceFilterInitialized = true;
+    } else {
+        touchForceFilt[0] =
+            filteredContactForce(rawLeftContact, touchForceFilt[0], timeStep,
+                               touchForceFilterTc, touchForceClamp);
+        touchForceFilt[1] =
+            filteredContactForce(rawRightContact, touchForceFilt[1], timeStep,
+                               touchForceFilterTc, touchForceClamp);
+    }
+    f3d[0][0]=0.0;
+    f3d[1][0]=0.0;
+    f3d[2][0]= touchForceFilt[0];
+    f3d[0][1]=0.0;
+    f3d[1][1]=0.0;
+    f3d[2][1]= touchForceFilt[1];
 
 }
 
@@ -96,6 +228,12 @@ void MJ_Interface::dataBusWrite(DataBus &busIn) {
     busIn.fR[0]=f3d[0][1];
     busIn.fR[1]=f3d[1][1];
     busIn.fR[2]=f3d[2][1];
+    busIn.foot_contact_fz_raw_l = rawContactFz[0];
+    busIn.foot_contact_fz_raw_r = rawContactFz[1];
+    busIn.foot_contact_fz_l = f3d[2][0];
+    busIn.foot_contact_fz_r = f3d[2][1];
+    busIn.foot_touch_raw_l = rawTouchForce[0];
+    busIn.foot_touch_raw_r = rawTouchForce[1];
     busIn.basePos[0]=basePos[0];
     busIn.basePos[1]=basePos[1];
     busIn.basePos[2]=basePos[2];
@@ -110,12 +248,4 @@ void MJ_Interface::dataBusWrite(DataBus &busIn) {
     busIn.baseAngVel[2]=baseAngVel[2];
     busIn.updateQ();
 }
-
-
-
-
-
-
-
-
 

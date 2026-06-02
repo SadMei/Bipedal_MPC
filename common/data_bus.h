@@ -24,6 +24,12 @@ struct DataBus {
   double rpy[3];
   double fL[3];
   double fR[3];
+  double foot_contact_fz_raw_l{0.0};
+  double foot_contact_fz_raw_r{0.0};
+  double foot_contact_fz_l{0.0};
+  double foot_contact_fz_r{0.0};
+  double foot_touch_raw_l{0.0};
+  double foot_touch_raw_r{0.0};
   double basePos[3];
   double baseLinVel[3]; // velocity of the basePos
   double baseAcc[3];    // baseAcc of the base link
@@ -70,6 +76,7 @@ struct DataBus {
 
   Eigen::Vector3d slop;
   Eigen::Matrix<double, 3, 3> inertia;
+  Eigen::Matrix<double, 3, 3> inertia_dot;
   double controller_mass{77.35};
   double controller_leg_mass{0.0};
 
@@ -78,6 +85,12 @@ struct DataBus {
   double leg_mass_fraction{0.38607619909502255};
   bool use_variable_inertia_model{true};
   bool use_tau_bias_feedforward{true};
+  bool use_linear_inertia_prediction{false};
+  bool use_linear_tau_dynamics{false};
+  double tau_bias_scale{1.0};
+  bool use_tau_phase_gate{false};
+  double tau_phase_gate_min{0.2};
+  double tau_phase_gate_max{0.8};
   double target_speed_x{0.0};
   double target_speed_y{0.0};
   double push_force_cmd{0.0};
@@ -89,7 +102,7 @@ struct DataBus {
   double torso_angle_error{0.0};
   double tau_bias_norm{0.0};
   Eigen::Vector3d tau_non_com; // nonlinear centroidal feedforward term for MPC
-  Eigen::Vector3d tau_non_mpc; // filtered/clamped tau_non actually injected into MPC
+  Eigen::Vector3d tau_non_mpc; // tau_non actually injected into MPC
   Eigen::Vector3d tau_non_idot_omega; // I_G_dot * omega component of tau_non_com
   Eigen::Vector3d tau_non_gyro;       // omega x (I_G * omega) component of tau_non_com
 
@@ -193,6 +206,13 @@ struct DataBus {
     tau_non_mpc.setZero();
     tau_non_idot_omega.setZero();
     tau_non_gyro.setZero();
+    inertia_dot.setZero();
+    use_linear_inertia_prediction = false;
+    use_linear_tau_dynamics = false;
+    tau_bias_scale = 1.0;
+    use_tau_phase_gate = false;
+    tau_phase_gate_min = 0.2;
+    tau_phase_gate_max = 0.8;
     des_ddq = Eigen::VectorXd::Zero(model_nv);
     des_dq = Eigen::VectorXd::Zero(model_nv);
     des_delta_q = Eigen::VectorXd::Zero(model_nv);

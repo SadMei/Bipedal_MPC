@@ -9,6 +9,24 @@ in any style, to contribute to the advancement of the community.
 #include "mpc.h"
 #include "useful_math.h"
 #include <algorithm>
+#include <cstdlib>
+
+namespace {
+
+double getEnvDouble(const char *name, double defaultValue) {
+  const char *value = std::getenv(name);
+  if (value == nullptr) {
+    return defaultValue;
+  }
+  char *end = nullptr;
+  const double parsed = std::strtod(value, &end);
+  if (end == value) {
+    return defaultValue;
+  }
+  return parsed;
+}
+
+} // namespace
 
 /**
  * @brief MPC类的构造函数
@@ -99,11 +117,20 @@ MPC::MPC(double dtIn) : QP(nu * ch, nc * ch) {
   R_w2f.setZero();  // 从世界系到支撑脚坐标系的旋转矩阵
   R_f2w.setZero();  // 从支撑脚坐标系到世界系的旋转矩阵
   Ig.setZero();     // 新增：总质心惯量张量，不再初始化硬编码的 Ic
+  Ig_dot.setZero();
+  Ig_dot_filtered.setZero();
+  Ig_dot_bias.setZero();
 
   // --- 初始化QP求解器 qpOASES ---
   nominal_Ig << 12.61, 0.0, 0.01, 0.0, 11.15, 0.01, 0.01, 0.01, 2.15;
   Ig = nominal_Ig;
   tau_non.setZero();
+  tau_non_affine.setZero();
+  Ig_dot_filtered.setZero();
+  Ig_dot_bias.setZero();
+  use_linear_inertia_prediction = false;
+  use_linear_tau_dynamics = false;
+  Ig_dot_filter_initialized = false;
   qp_Status = 0;
   qp_nWSR = 0;
   qp_cpuTime = 0.0;
@@ -243,29 +270,85 @@ void MPC::dataBusRead(DataBus &Data) {
   m = controller_mass;
   max[2] = -3.0 * m * g;
 
+  const double ig_dot_filter_tau =
+      getEnvDouble("ODC_IG_DOT_FILTER_TAU", 0.0); // [s], <=0 disables
   if (Data.use_variable_inertia_model) {
     Ig = Data.inertia;
+    const Eigen::Matrix3d Ig_dot_raw = Data.inertia_dot;
+    if (ig_dot_filter_tau > 0.0 && Ig_dot_raw.allFinite()) {
+      const double alpha = dt / (ig_dot_filter_tau + dt);
+      if (!Ig_dot_filter_initialized) {
+        Ig_dot_filtered = Ig_dot_raw;
+        Ig_dot_filter_initialized = true;
+      } else {
+        Ig_dot_filtered += alpha * (Ig_dot_raw - Ig_dot_filtered);
+      }
+      Ig_dot = 0.5 * (Ig_dot_filtered + Ig_dot_filtered.transpose());
+    } else {
+      Ig_dot = Ig_dot_raw;
+      Ig_dot_filtered = Ig_dot_raw;
+      Ig_dot_filter_initialized = false;
+    }
     inertia_is_world_aligned = true;
   } else {
     Ig = nominal_Ig;
+    Ig_dot.setZero();
+    Ig_dot_filtered.setZero();
+    Ig_dot_filter_initialized = false;
     inertia_is_world_aligned = false;
+  }
+  use_linear_inertia_prediction =
+      Data.use_variable_inertia_model && Data.use_linear_inertia_prediction;
+  use_linear_tau_dynamics =
+      Data.use_variable_inertia_model && Data.use_linear_tau_dynamics;
+  Ig_dot_bias.setZero();
+  tau_non.setZero();
+  tau_non_affine.setZero();
+  const double tau_non_norm_limit =
+      getEnvDouble("ODC_TAU_NON_NORM_LIMIT", 60.0); // [N*m], <=0 disables
+  const bool single_support =
+      Data.legState == DataBus::LSt || Data.legState == DataBus::RSt;
+  const bool tau_phase_allowed =
+      !Data.use_tau_phase_gate ||
+      (single_support && Data.phi >= Data.tau_phase_gate_min &&
+       Data.phi <= Data.tau_phase_gate_max);
+  if (Data.use_tau_bias_feedforward && tau_phase_allowed &&
+      use_linear_tau_dynamics) {
+    Ig_dot_bias = Data.tau_bias_scale * Ig_dot;
+    tau_non = Ig_dot_bias * X_cur.block<3, 1>(6, 0);
+    const double tau_norm = tau_non.norm();
+    if (tau_non_norm_limit > 0.0 && tau_norm > tau_non_norm_limit) {
+      const double scale = tau_non_norm_limit / tau_norm;
+      Ig_dot_bias *= scale;
+      tau_non *= scale;
+    }
+  }
+  const double tau_affine_norm = tau_non_affine.norm();
+  if (tau_non_norm_limit > 0.0 && tau_affine_norm > tau_non_norm_limit) {
+    tau_non_affine *= tau_non_norm_limit / tau_affine_norm;
+  }
+  if (tau_non_affine.norm() > 0.0) {
+    tau_non += tau_non_affine;
   }
   // 更新机身惯量矩阵 Ic
   //	Ig << 12.61,  0    , 0.01
   //		  ,0   ,  11.15, 0.01
   //		  ,0.37,  0.01 , 2.15;
 
-  const Eigen::Vector3d tau_non_raw =
-      Data.use_tau_bias_feedforward ? Data.tau_non_com : Eigen::Vector3d::Zero();
-  if (Data.use_tau_bias_feedforward && tau_non_raw.allFinite()) {
+  Eigen::Vector3d tau_non_raw = Eigen::Vector3d::Zero();
+  if (Data.use_tau_bias_feedforward && tau_phase_allowed &&
+      !use_linear_tau_dynamics) {
+    tau_non_raw = Data.tau_bias_scale * Data.tau_non_com;
+  }
+  if (Data.use_tau_bias_feedforward && !use_linear_tau_dynamics &&
+      tau_non_raw.allFinite()) {
     tau_non = tau_non_raw;
-    constexpr double kTauNonNormLimit = 60.0; // [N*m]
+    tau_non_affine = tau_non;
     const double tau_norm = tau_non.norm();
-    if (tau_norm > kTauNonNormLimit) {
-      tau_non *= kTauNonNormLimit / tau_norm;
+    if (tau_non_norm_limit > 0.0 && tau_norm > tau_non_norm_limit) {
+      tau_non *= tau_non_norm_limit / tau_norm;
+      tau_non_affine = tau_non;
     }
-  } else {
-    tau_non.setZero();
   }
   Data.tau_non_mpc = tau_non;
 
@@ -273,8 +356,9 @@ void MPC::dataBusRead(DataBus &Data) {
   legStateCur = Data.legState;      // 当前支撑状态 (左/右/双支撑)
   legStateNext = Data.legStateNext; // 下一个周期的支撑状态
   // 根据当前步态相位phi和步态周期，推算未来N个时刻的支撑腿状态
+  const double t_swing_pred = std::max(Data.tSwing, 1e-6);
   for (int i = 0; i < mpc_N; i++) {
-    double aa = i * dt / 0.4; // 0.4是步态周期
+    double aa = i * dt / t_swing_pred;
     double phip = Data.phi + aa;
     if (phip > 1) // 如果预测的相位超过1，说明进入了下一个支撑状态
       legState[i] = legStateNext;
@@ -302,16 +386,35 @@ void MPC::cal() {
   if (EN) { // 只有在MPC启用时才执行计算
     Eigen::MatrixXd C_seq =
         Eigen::MatrixXd::Zero(nx * mpc_N, 1); // 存储每一预测步的离散偏置
+    const bool predict_Ig =
+        use_linear_inertia_prediction && inertia_is_world_aligned;
+    auto predictedIg = [&](int node) {
+      Eigen::Matrix3d Ig_i = Ig;
+      if (predict_Ig) {
+        Ig_i += static_cast<double>(node) * dt * Ig_dot;
+        Ig_i = 0.5 * (Ig_i + Ig_i.transpose());
+        if (!Ig_i.allFinite() ||
+            Eigen::LLT<Eigen::Matrix3d>(Ig_i).info() != Eigen::Success) {
+          Ig_i = Ig;
+        }
+      }
+      return Ig_i;
+    };
     // --- 1. 构建离散时间状态空间模型 X(k+1) = A*X(k) + B*U(k) ---
     for (int i = 0; i < mpc_N; i++) {
+      Ac[i].setZero();
       // 连续时间模型 Ac
       Ac[i].block<3, 3>(0, 6) = R_curz[i].transpose(); // 角速度 -> 姿态变化
       Ac[i].block<3, 3>(3, 9) =
           Eigen::MatrixXd::Identity(3, 3); // 线速度 -> 位置变化
+      if (use_linear_tau_dynamics && Ig_dot_bias.norm() > 0.0) {
+        Ac[i].block<3, 3>(6, 6) += -predictedIg(i).inverse() * Ig_dot_bias;
+      }
       // 离散化: A = I + dt*Ac
       A[i] = Eigen::MatrixXd::Identity(nx, nx) + dt * Ac[i];
     }
     for (int i = 0; i < mpc_N; i++) {
+      Bc[i].setZero();
       // 在每个预测步长更新从脚到质心的向量
       pf2comi[i] = pf2com;
       Eigen::Matrix3d Ic_W_inv;
@@ -320,7 +423,7 @@ void MPC::cal() {
       // aligned with the inertial/world frame. Only the legacy nominal SRBM
       // inertia needs the extra yaw rotation into the world frame here.
       if (inertia_is_world_aligned) {
-        Ic_W_inv = Ig.inverse();
+        Ic_W_inv = predictedIg(i).inverse();
       } else {
         Ic_W_inv = (R_curz[i] * Ig * R_curz[i].transpose()).inverse();
       }
@@ -349,7 +452,13 @@ void MPC::cal() {
       // Affine bias term induced by the nonlinear centroidal feedforward.
       Eigen::Matrix<double, nx, 1> Cc_i;
       Cc_i.setZero();
-      Cc_i.block<3, 1>(6, 0) = -Ic_W_inv * tau_non; // 角加速度的非线性前馈偏置
+      if (!use_linear_tau_dynamics) {
+        Cc_i.block<3, 1>(6, 0) =
+            -Ic_W_inv * tau_non; // 角加速度的非线性前馈偏置
+      } else if (tau_non_affine.norm() > 0.0) {
+        Cc_i.block<3, 1>(6, 0) =
+            -Ic_W_inv * tau_non_affine; // 内部相对角动量导数的仿射偏置
+      }
 
       // 离散化常数项 C_d
       C_seq.block<nx, 1>(i * nx, 0) = Cc_i * dt;
@@ -643,7 +752,11 @@ void MPC::cal() {
     } else {
       Ic_W_inv_c = (R_curz[0] * Ig * R_curz[0].transpose()).inverse();
     }
-    Cc_inst.block<3, 1>(6, 0) = -Ic_W_inv_c * tau_non;
+    if (!use_linear_tau_dynamics) {
+      Cc_inst.block<3, 1>(6, 0) = -Ic_W_inv_c * tau_non;
+    } else {
+      Cc_inst.block<3, 1>(6, 0) = -Ic_W_inv_c * tau_non_affine;
+    }
     dX_cal = Ac[0] * X_cur + Bc[0] * Ufe.block<nu, 1>(0, 0) + Cc_inst;
 
     // 对预测进行简单的二阶积分补偿，提高精度

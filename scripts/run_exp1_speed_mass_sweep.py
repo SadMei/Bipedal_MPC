@@ -34,6 +34,14 @@ class Controller:
     use_tau: bool
 
 
+CONTROLLER_PRESETS = {
+    "SRBM": Controller("SRBM", False, False),
+    "SRBM_tau": Controller("SRBM_tau", False, True),
+    "VICM_IgOnly": Controller("VICM_IgOnly", True, False),
+    "VICM_tau": Controller("VICM_tau", True, True),
+}
+
+
 @dataclass(frozen=True)
 class Condition:
     controller: Controller
@@ -42,11 +50,13 @@ class Condition:
     trial: int
     tswing: float
     sim_end_time: float
+    tau_bias_scale: float
 
     @property
     def run_label(self) -> str:
         return (
             f"exp1_{self.controller.name}_t{fmt_token(self.tswing)}_"
+            f"a{fmt_token(self.tau_bias_scale)}_"
             f"lf{fmt_token(self.leg_mass_fraction)}_"
             f"vx{fmt_token(self.vx)}_trial{self.trial}"
         )
@@ -79,17 +89,21 @@ def ensure_build(skip_build: bool) -> None:
 
 
 def build_plan(args: argparse.Namespace) -> list[Condition]:
-    controllers = [
-        Controller("SRBM", False, False),
-        Controller("VICM_tau", True, True),
-    ]
+    controller_names = [name.strip() for name in args.controllers.split(",") if name.strip()]
+    unknown = [name for name in controller_names if name not in CONTROLLER_PRESETS]
+    if unknown:
+        known = ", ".join(sorted(CONTROLLER_PRESETS))
+        raise ValueError(f"unknown controller(s): {', '.join(unknown)}; known: {known}")
+    controllers = [CONTROLLER_PRESETS[name] for name in controller_names]
     speeds = [float(v) for v in args.speeds.split(",")]
     masses = frange(args.mass_start, args.mass_stop, args.mass_step)
+    tau_scales = [float(v) for v in args.tau_scales.split(",")]
     return [
-        Condition(controller, vx, mass, trial, args.tswing, args.sim_end_time)
+        Condition(controller, vx, mass, trial, args.tswing, args.sim_end_time, tau_scale)
         for vx in speeds
         for mass in masses
         for controller in controllers
+        for tau_scale in (tau_scales if controller.use_tau else [0.0])
         for trial in range(1, args.repeats + 1)
     ]
 
@@ -108,6 +122,7 @@ def write_plan(plan: list[Condition], output_dir: Path) -> None:
                 "trial",
                 "tswing",
                 "sim_end_time",
+                "tau_bias_scale",
             ],
         )
         writer.writeheader()
@@ -123,6 +138,7 @@ def write_plan(plan: list[Condition], output_dir: Path) -> None:
                     "trial": cond.trial,
                     "tswing": f"{cond.tswing:.6f}",
                     "sim_end_time": f"{cond.sim_end_time:.6f}",
+                    "tau_bias_scale": f"{cond.tau_bias_scale:.6f}",
                 }
             )
 
@@ -205,6 +221,7 @@ def run_condition(
             "ODC_TSWING": f"{cond.tswing:.12g}",
             "ODC_USE_VICM": "1" if cond.controller.use_vicm else "0",
             "ODC_USE_TAU_BIAS": "1" if cond.controller.use_tau else "0",
+            "ODC_TAU_BIAS_SCALE": f"{cond.tau_bias_scale:.12g}",
             "ODC_LEG_MASS_FRACTION": f"{cond.leg_mass_fraction:.12g}",
             "ODC_TARGET_SPEED_X": f"{cond.vx:.12g}",
             "ODC_TARGET_SPEED_Y": "0",
@@ -260,6 +277,7 @@ def make_raw_row(
         "use_tau": int(cond.controller.use_tau),
         "target_speed_x": f"{cond.vx:.6f}",
         "leg_mass_fraction": f"{cond.leg_mass_fraction:.6f}",
+        "tau_bias_scale": f"{cond.tau_bias_scale:.6f}",
         "trial": cond.trial,
         "tswing": f"{cond.tswing:.6f}",
         "return_code": return_code,
@@ -287,7 +305,7 @@ def write_rows(path: Path, rows: list[dict[str, str | int | float]]) -> None:
 
 
 def aggregate_rows(rows: list[dict[str, str | int | float]]) -> list[dict[str, str | int | float]]:
-    groups: dict[tuple[str, str, str], list[dict[str, str | int | float]]] = {}
+    groups: dict[tuple[str, str, str, str], list[dict[str, str | int | float]]] = {}
     for row in rows:
         if row.get("parse_error"):
             continue
@@ -295,11 +313,12 @@ def aggregate_rows(rows: list[dict[str, str | int | float]]) -> list[dict[str, s
             str(row["target_speed_x"]),
             str(row["leg_mass_fraction"]),
             str(row["controller"]),
+            str(row["tau_bias_scale"]),
         )
         groups.setdefault(key, []).append(row)
 
     summary: list[dict[str, str | int | float]] = []
-    for (vx, lf, controller), group in sorted(groups.items(), key=lambda item: item[0]):
+    for (vx, lf, controller, tau_scale), group in sorted(groups.items(), key=lambda item: item[0]):
         durations = [float(row["duration_s"]) for row in group]
         falls = [int(row["fall_detected"]) for row in group]
         summary.append(
@@ -307,6 +326,7 @@ def aggregate_rows(rows: list[dict[str, str | int | float]]) -> list[dict[str, s
                 "target_speed_x": vx,
                 "leg_mass_fraction": lf,
                 "controller": controller,
+                "tau_bias_scale": tau_scale,
                 "n": len(group),
                 "duration_mean_s": f"{statistics.mean(durations):.6f}",
                 "duration_std_s": f"{statistics.pstdev(durations):.6f}"
@@ -346,6 +366,8 @@ def write_report(output_dir: Path, rows: list[dict[str, str | int | float]]) -> 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--speeds", default="1.5")
+    parser.add_argument("--controllers", default="SRBM,VICM_tau")
+    parser.add_argument("--tau-scales", default="1.0")
     parser.add_argument("--mass-start", type=float, default=0.40)
     parser.add_argument("--mass-stop", type=float, default=0.80)
     parser.add_argument("--mass-step", type=float, default=0.05)

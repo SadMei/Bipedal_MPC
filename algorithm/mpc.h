@@ -13,7 +13,7 @@ in any style, to contribute to the advancement of the community.
 #include <Eigen/Dense>
 #include <iostream>
 
-const uint16_t mpc_N = 20;
+const uint16_t mpc_N = 10;
 const uint16_t ch = 3;
 const uint16_t nx = 12;
 const uint16_t nu = 13;
@@ -89,8 +89,15 @@ private:
   // Modified: 使用全身质心转动惯量 Ig 替代固定的 Ic
   Eigen::Matrix<double, 3, 3> nominal_Ig;
   Eigen::Matrix<double, 3, 3> Ig;
+  Eigen::Matrix<double, 3, 3> Ig_dot;
+  Eigen::Matrix<double, 3, 3> Ig_dot_filtered;
+  Eigen::Matrix<double, 3, 3> Ig_dot_bias;
   Eigen::Matrix<double, 3, 1> tau_non;
+  Eigen::Matrix<double, 3, 1> tau_non_affine;
   bool inertia_is_world_aligned{false};
+  bool use_linear_inertia_prediction{false};
+  bool use_linear_tau_dynamics{false};
+  bool Ig_dot_filter_initialized{false};
 
   Eigen::Matrix<double, 3, 3> R_curz[mpc_N];
   Eigen::Matrix<double, 3, 3> R_cur;

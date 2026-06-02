@@ -21,6 +21,8 @@ public:
     double rpy[3]{0}; // roll,pitch and yaw of baselink
     double baseQuat[4]{0}; // in quat, mujoco order is [w,x,y,z], here we rearrange to [x,y,z,w]
     double f3d[3][2]{0}; // 3D foot-end contact force, L for 1st col, R for 2nd col
+    double rawContactFz[2]{0.0, 0.0};
+    double rawTouchForce[2]{0.0, 0.0};
     double basePos[3]{0}; // position of baselink, in world frame
     double baseAcc[3]{0};  // acceleration of baselink, in body frame
     double baseAngVel[3]{0}; // angular velocity of baselink, in body frame
@@ -37,6 +39,12 @@ public:
     const std::string velSensorName="baselink-velocity";
     const std::string gyroSensorName="baselink-gyro";
     const std::string accSensorName="baselink-baseAcc";
+    const std::string leftTouchSensorName="lf-touch";
+    const std::string rightTouchSensorName="rf-touch";
+    const std::string leftFootPitchBodyName="Link_ankle_l_pitch";
+    const std::string leftFootRollBodyName="Link_ankle_l_roll";
+    const std::string rightFootPitchBodyName="Link_ankle_r_pitch";
+    const std::string rightFootRollBodyName="Link_ankle_r_roll";
 
     MJ_Interface(mjModel *mj_modelIn, mjData  *mj_dataIn);
     void updateSensorValues();
@@ -52,11 +60,18 @@ private:
     int velSensorId;
     int gyroSensorId;
     int accSensorId;
+    int leftTouchSensorId;
+    int rightTouchSensorId;
+    int leftFootPitchBodyId;
+    int leftFootRollBodyId;
+    int rightFootPitchBodyId;
+    int rightFootRollBodyId;
     int baseBodyId;
 
     double timeStep{0.001}; // second
+    double touchForceFilterTc{0.01}; // first-order low-pass time constant [s]
+    double touchForceClamp{1500.0};  // positive z-force clamp [N]
+    double touchForceFilt[2]{0.0, 0.0};
+    bool touchForceFilterInitialized{false};
     bool isIni{false};
 };
-
-
-

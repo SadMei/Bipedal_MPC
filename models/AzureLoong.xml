@@ -303,42 +303,42 @@
         
   </contact>
   <actuator>
-      <motor name="M_arm_l_01"  joint="J_arm_l_01" gear="1" ctrllimited="true" ctrlrange="-80 80"/>
-      <motor name="M_arm_l_02"  joint="J_arm_l_02" gear="1" ctrllimited="true" ctrlrange="-80 80"/>
-      <motor name="M_arm_l_03"  joint="J_arm_l_03" gear="1" ctrllimited="true" ctrlrange="-48 48"/>
-      <motor name="M_arm_l_04"  joint="J_arm_l_04" gear="1" ctrllimited="true" ctrlrange="-48 48"/>
-      <motor name="M_arm_l_05"  joint="J_arm_l_05" gear="1" ctrllimited="true" ctrlrange="-12.4 12.4"/>
-      <motor name="M_arm_l_06"  joint="J_arm_l_06" gear="1" ctrllimited="true" ctrlrange="-12.4 12.4"/>
-      <motor name="M_arm_l_07"  joint="J_arm_l_07" gear="1" ctrllimited="true" ctrlrange="-12.4 12.4"/>
+      <motor name="M_arm_l_01"  joint="J_arm_l_01" gear="1" ctrllimited="false" ctrlrange="-80 80"/>
+      <motor name="M_arm_l_02"  joint="J_arm_l_02" gear="1" ctrllimited="false" ctrlrange="-80 80"/>
+      <motor name="M_arm_l_03"  joint="J_arm_l_03" gear="1" ctrllimited="false" ctrlrange="-48 48"/>
+      <motor name="M_arm_l_04"  joint="J_arm_l_04" gear="1" ctrllimited="false" ctrlrange="-48 48"/>
+      <motor name="M_arm_l_05"  joint="J_arm_l_05" gear="1" ctrllimited="false" ctrlrange="-12.4 12.4"/>
+      <motor name="M_arm_l_06"  joint="J_arm_l_06" gear="1" ctrllimited="false" ctrlrange="-12.4 12.4"/>
+      <motor name="M_arm_l_07"  joint="J_arm_l_07" gear="1" ctrllimited="false" ctrlrange="-12.4 12.4"/>
 
-      <motor name="M_arm_r_01"  joint="J_arm_r_01" gear="1" ctrllimited="true" ctrlrange="-80 80"/>
-      <motor name="M_arm_r_02"  joint="J_arm_r_02" gear="1" ctrllimited="true" ctrlrange="-80 80"/>
-      <motor name="M_arm_r_03"  joint="J_arm_r_03" gear="1" ctrllimited="true" ctrlrange="-48 48"/>
-      <motor name="M_arm_r_04"  joint="J_arm_r_04" gear="1" ctrllimited="true" ctrlrange="-48 48"/>
-      <motor name="M_arm_r_05"  joint="J_arm_r_05" gear="1" ctrllimited="true" ctrlrange="-12.4 12.4"/>
-      <motor name="M_arm_r_06"  joint="J_arm_r_06" gear="1" ctrllimited="true" ctrlrange="-12.4 12.4"/>
-      <motor name="M_arm_r_07"  joint="J_arm_r_07" gear="1" ctrllimited="true" ctrlrange="-12.4 12.4"/>
+      <motor name="M_arm_r_01"  joint="J_arm_r_01" gear="1" ctrllimited="false" ctrlrange="-80 80"/>
+      <motor name="M_arm_r_02"  joint="J_arm_r_02" gear="1" ctrllimited="false" ctrlrange="-80 80"/>
+      <motor name="M_arm_r_03"  joint="J_arm_r_03" gear="1" ctrllimited="false" ctrlrange="-48 48"/>
+      <motor name="M_arm_r_04"  joint="J_arm_r_04" gear="1" ctrllimited="false" ctrlrange="-48 48"/>
+      <motor name="M_arm_r_05"  joint="J_arm_r_05" gear="1" ctrllimited="false" ctrlrange="-12.4 12.4"/>
+      <motor name="M_arm_r_06"  joint="J_arm_r_06" gear="1" ctrllimited="false" ctrlrange="-12.4 12.4"/>
+      <motor name="M_arm_r_07"  joint="J_arm_r_07" gear="1" ctrllimited="false" ctrlrange="-12.4 12.4"/>
 
-      <motor name="M_head_yaw"  joint="J_head_yaw" gear="1" ctrllimited="true" ctrlrange="-26 26"/>
-      <motor name="M_head_pitch"  joint="J_head_pitch" gear="1" ctrllimited="true" ctrlrange="-26 26"/>
+      <motor name="M_head_yaw"  joint="J_head_yaw" gear="1" ctrllimited="false" ctrlrange="-26 26"/>
+      <motor name="M_head_pitch"  joint="J_head_pitch" gear="1" ctrllimited="false" ctrlrange="-26 26"/>
 
-      <motor name="M_waist_pitch"  joint="J_waist_pitch" gear="1" ctrllimited="true" ctrlrange="-315 315"/>
-      <motor name="M_waist_roll"  joint="J_waist_roll" gear="1" ctrllimited="true" ctrlrange="-315 315"/>
-      <motor name="M_waist_yaw"  joint="J_waist_yaw" gear="1" ctrllimited="true" ctrlrange="-121 121"/>
+      <motor name="M_waist_pitch"  joint="J_waist_pitch" gear="1" ctrllimited="false" ctrlrange="-315 315"/>
+      <motor name="M_waist_roll"  joint="J_waist_roll" gear="1" ctrllimited="false" ctrlrange="-315 315"/>
+      <motor name="M_waist_yaw"  joint="J_waist_yaw" gear="1" ctrllimited="false" ctrlrange="-121 121"/>
 
-      <motor name="M_hip_l_roll"  joint="J_hip_l_roll" gear="1" ctrllimited="true" ctrlrange="-320 320"/>
-      <motor name="M_hip_l_yaw"  joint="J_hip_l_yaw" gear="1" ctrllimited="true" ctrlrange="-160 160"/>
-      <motor name="M_hip_l_pitch" joint="J_hip_l_pitch" gear="1" ctrllimited="true" ctrlrange="-396 396"/>
-      <motor name="M_knee_l_pitch"  joint="J_knee_l_pitch" gear="1" ctrllimited="true" ctrlrange="-396 396"/>
-      <motor name="M_ankle_l_pitch"  joint="J_ankle_l_pitch" gear="1" ctrllimited="true" ctrlrange="-58.5 58.5"/>
-      <motor name="M_ankle_l_roll"  joint="J_ankle_l_roll" gear="1" ctrllimited="true" ctrlrange="-58.5 58.5"/>
+      <motor name="M_hip_l_roll"  joint="J_hip_l_roll" gear="1" ctrllimited="false" ctrlrange="-320 320"/>
+      <motor name="M_hip_l_yaw"  joint="J_hip_l_yaw" gear="1" ctrllimited="false" ctrlrange="-160 160"/>
+      <motor name="M_hip_l_pitch" joint="J_hip_l_pitch" gear="1" ctrllimited="false" ctrlrange="-396 396"/>
+      <motor name="M_knee_l_pitch"  joint="J_knee_l_pitch" gear="1" ctrllimited="false" ctrlrange="-396 396"/>
+      <motor name="M_ankle_l_pitch"  joint="J_ankle_l_pitch" gear="1" ctrllimited="false" ctrlrange="-58.5 58.5"/>
+      <motor name="M_ankle_l_roll"  joint="J_ankle_l_roll" gear="1" ctrllimited="false" ctrlrange="-58.5 58.5"/>
 
-      <motor name="M_hip_r_roll"  joint="J_hip_r_roll" gear="1" ctrllimited="true" ctrlrange="-320 320"/>
-      <motor name="M_hip_r_yaw"  joint="J_hip_r_yaw" gear="1" ctrllimited="true" ctrlrange="-160 160"/>
-      <motor name="M_hip_r_pitch"  joint="J_hip_r_pitch" gear="1" ctrllimited="true" ctrlrange="-396 396"/>
-      <motor name="M_knee_r_pitch"  joint="J_knee_r_pitch" gear="1" ctrllimited="true" ctrlrange="-396 396"/>
-      <motor name="M_ankle_r_pitch"  joint="J_ankle_r_pitch" gear="1" ctrllimited="true" ctrlrange="-58.5 58.5"/>
-      <motor name="M_ankle_r_roll"  joint="J_ankle_r_roll" gear="1" ctrllimited="true" ctrlrange="-58.5 58.5"/>
+      <motor name="M_hip_r_roll"  joint="J_hip_r_roll" gear="1" ctrllimited="false" ctrlrange="-320 320"/>
+      <motor name="M_hip_r_yaw"  joint="J_hip_r_yaw" gear="1" ctrllimited="false" ctrlrange="-160 160"/>
+      <motor name="M_hip_r_pitch"  joint="J_hip_r_pitch" gear="1" ctrllimited="false" ctrlrange="-396 396"/>
+      <motor name="M_knee_r_pitch"  joint="J_knee_r_pitch" gear="1" ctrllimited="false" ctrlrange="-396 396"/>
+      <motor name="M_ankle_r_pitch"  joint="J_ankle_r_pitch" gear="1" ctrllimited="false" ctrlrange="-58.5 58.5"/>
+      <motor name="M_ankle_r_roll"  joint="J_ankle_r_roll" gear="1" ctrllimited="false" ctrlrange="-58.5 58.5"/>
 
         
 	<!--position name="P_arm_l_01" joint="J_arm_l_01" kp="600" />

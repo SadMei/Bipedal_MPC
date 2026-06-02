@@ -81,6 +81,7 @@ public:
   Eigen::VectorXd dyn_Non;
   Eigen::Vector3d CoM_pos;
   Eigen::Matrix3d inertia;
+  Eigen::Matrix3d inertia_dot;
   Eigen::Vector3d tau_non_com;
   Eigen::Vector3d tau_non_idot_omega;
   Eigen::Vector3d tau_non_gyro;

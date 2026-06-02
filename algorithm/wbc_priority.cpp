@@ -12,9 +12,24 @@ Feel free to use in any purpose, and cite OpenLoong-Dynamics-Control in any styl
 #include "wbc_priority.h"
 #include "iostream"
 #include "serialport.h"
+#include <cstdlib>
 uint8_t coordinate = 0; //WBC 运动学关节协同
 uint8_t fixedarm = 1; //固定上肢关节
 //std::vector<std::string> taskOrder_walk;
+
+namespace {
+double getEnvDouble(const char *name, double default_value)
+{
+	const char *value = std::getenv(name);
+	if (value == nullptr) {
+		return default_value;
+	}
+	char *end = nullptr;
+	const double parsed = std::strtod(value, &end);
+	return end != value ? parsed : default_value;
+}
+}
+
 // QP_nvIn=18, QP_ncIn=22
 WBC_priority::WBC_priority(int model_nv_In, int QP_nvIn, int QP_ncIn, double miu_In, double dt) : QP_prob(QP_nvIn,
 	QP_ncIn)
@@ -41,6 +56,19 @@ WBC_priority::WBC_priority(int model_nv_In, int QP_nvIn, int QP_ncIn, double miu
 
 	tau_upp_walk_L << 25, 40, 40; // foot end contact torque limit for walk state, in body frame
 	tau_low_walk_L << -25, -40, -40;
+
+	posrot_pos_kp_scale = std::max(0.0, getEnvDouble("ODC_WBC_POSROT_POS_KP_SCALE", 1.0));
+	posrot_pos_kd_scale = std::max(0.0, getEnvDouble("ODC_WBC_POSROT_POS_KD_SCALE", 1.0));
+	posrot_att_kp_scale = std::max(0.0, getEnvDouble("ODC_WBC_POSROT_ATT_KP_SCALE", 1.0));
+	posrot_att_kd_scale = std::max(0.0, getEnvDouble("ODC_WBC_POSROT_ATT_KD_SCALE", 1.0));
+	std::cout << "[WBC PosRot] pos_kp_scale=" << posrot_pos_kp_scale
+			  << " pos_kd_scale=" << posrot_pos_kd_scale
+			  << " att_kp_scale=" << posrot_att_kp_scale
+			  << " att_kd_scale=" << posrot_att_kd_scale << std::endl;
+	qp_delta_ddq_weight = std::max(0.0, getEnvDouble("ODC_WBC_DELTA_DDQ_WEIGHT", 1e7));
+	qp_delta_fr_weight = std::max(0.0, getEnvDouble("ODC_WBC_DELTA_FR_WEIGHT", 1e1));
+	std::cout << "[WBC QP] delta_ddq_weight=" << qp_delta_ddq_weight
+			  << " delta_Fr_weight=" << qp_delta_fr_weight << std::endl;
 
 	qpOASES::Options options;
 	options.setToMPC();
@@ -346,11 +374,11 @@ void WBC_priority::computeTau()
 	eigen_qp_ubA.block<6, 1>(0, 0) = eqRes;
 	eigen_qp_ubA.block<16, 1>(6, 0) = neqRes_upp;
 
-	Eigen::MatrixXd eigen_qp_H = Eigen::MatrixXd::Zero(QP_nv, QP_nv);
-	Q2 = Eigen::MatrixXd::Identity(6, 6);
-	Q1 = Eigen::MatrixXd::Identity(12, 12);
-	eigen_qp_H.block<6, 6>(0, 0) = Q2 * 2.0 * 1e7;
-	eigen_qp_H.block<12, 12>(6, 6) = Q1 * 2.0 * 1e1;
+		Eigen::MatrixXd eigen_qp_H = Eigen::MatrixXd::Zero(QP_nv, QP_nv);
+		Q2 = Eigen::MatrixXd::Identity(6, 6);
+		Q1 = Eigen::MatrixXd::Identity(12, 12);
+		eigen_qp_H.block<6, 6>(0, 0) = Q2 * 2.0 * qp_delta_ddq_weight;
+		eigen_qp_H.block<12, 12>(6, 6) = Q1 * 2.0 * qp_delta_fr_weight;
 
 	// obj: (1/2)x'Hx+x'g
 	// s.t. lbA<=Ax<=ubA
@@ -536,10 +564,14 @@ void WBC_priority::computeDdq(Pin_KinDyn& pinKinDynIn)
 		kin_tasks_walk.taskLib[id].derrX = Eigen::VectorXd::Zero(6);
 		kin_tasks_walk.taskLib[id].ddxDes = Eigen::VectorXd::Zero(6);
 		kin_tasks_walk.taskLib[id].dxDes = Eigen::VectorXd::Zero(6);
-		kin_tasks_walk.taskLib[id].kp = Eigen::MatrixXd::Identity(6, 6) * 10;
-		kin_tasks_walk.taskLib[id].kp.block(3, 3, 3, 3) = Eigen::MatrixXd::Identity(3, 3) * 2000;
-		kin_tasks_walk.taskLib[id].kd = Eigen::MatrixXd::Identity(6, 6) * 2;
-		kin_tasks_walk.taskLib[id].kd.block(3, 3, 3, 3) = Eigen::MatrixXd::Identity(3, 3) * 100;
+		kin_tasks_walk.taskLib[id].kp =
+			Eigen::MatrixXd::Identity(6, 6) * (10.0 * posrot_pos_kp_scale);
+		kin_tasks_walk.taskLib[id].kp.block(3, 3, 3, 3) =
+			Eigen::MatrixXd::Identity(3, 3) * (2000.0 * posrot_att_kp_scale);
+		kin_tasks_walk.taskLib[id].kd =
+			Eigen::MatrixXd::Identity(6, 6) * (2.0 * posrot_pos_kd_scale);
+		kin_tasks_walk.taskLib[id].kd.block(3, 3, 3, 3) =
+			Eigen::MatrixXd::Identity(3, 3) * (100.0 * posrot_att_kd_scale);
 		kin_tasks_walk.taskLib[id].J = J_base;
 		kin_tasks_walk.taskLib[id].dJ = dJ_base;
 		kin_tasks_walk.taskLib[id].W.diagonal() = Eigen::VectorXd::Ones(model_nv);
