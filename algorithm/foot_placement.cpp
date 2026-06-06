@@ -88,9 +88,9 @@ void FootPlacement::getSwingPos() {
 			isFirstSwing ? firstStepLateralBiasScale : 1.0;
 		const double firstStepHeight =
 			stepHeight * (isFirstSwing ? firstStepHeightScale : 1.0);
-		double xOff_L=-0.01; double yOff_L=0.01 * firstStepScale; double zOff_W=-0.035;
-	double xOff_W = (legState==DataBus::LSt) ? (cos(yawCur)*xOff_L - sin(yawCur)*yOff_L) : (cos(yawCur)*xOff_L - sin(yawCur)*(-yOff_L));
-	double yOff_W = (legState==DataBus::LSt) ? (sin(yawCur)*xOff_L + cos(yawCur)*yOff_L) : (sin(yawCur)*xOff_L + cos(yawCur)*(-yOff_L));
+			double yOffCurrent_L = yOff_L * firstStepScale;
+	double xOff_W = (legState==DataBus::LSt) ? (cos(yawCur)*xOff_L - sin(yawCur)*yOffCurrent_L) : (cos(yawCur)*xOff_L - sin(yawCur)*(-yOffCurrent_L));
+	double yOff_W = (legState==DataBus::LSt) ? (sin(yawCur)*xOff_L + cos(yawCur)*yOffCurrent_L) : (sin(yawCur)*xOff_L + cos(yawCur)*(-yOffCurrent_L));
 	posDes_Ideal(0)+= xOff_W;
 	posDes_Ideal(1)+= yOff_W;
 

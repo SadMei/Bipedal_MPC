@@ -367,7 +367,7 @@ def main() -> int:
     parser.add_argument("--wbc-delta-ddq-weight", type=float, default=None)
     parser.add_argument(
         "--mpc-l-diag",
-        default="50 50 20 1 200 1 1 1 2 100 10 1",
+        default="50 50 80 1 200 1 1 1 10 100 10 1",
     )
     args = parser.parse_args()
 

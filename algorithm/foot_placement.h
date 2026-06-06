@@ -17,6 +17,9 @@ class FootPlacement {
 		double kp_vx{0}, kp_vy{0}, kp_wz{0};
 		double legLength{1};
 		double stepHeight{0.1};
+		double xOff_L{-0.01};
+		double yOff_L{0.01};
+		double zOff_W{-0.035};
 		double firstStepLateralBiasScale{0.25};
 		double firstStepHeightScale{0.6};
 		double phi{0};    // phase varialbe for trajectory generation, must between 0 and 1

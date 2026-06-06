@@ -436,6 +436,14 @@ int main(int argc, char **argv) {
   push_force = getEnvDouble("ODC_PUSH_FORCE", push_force);
   push_start_time = getEnvDouble("ODC_PUSH_START_TIME", push_start_time);
   push_duration = getEnvDouble("ODC_PUSH_DURATION", push_duration);
+  push_dir_W(0) = getEnvDouble("ODC_PUSH_DIR_X", push_dir_W(0));
+  push_dir_W(1) = getEnvDouble("ODC_PUSH_DIR_Y", push_dir_W(1));
+  push_dir_W(2) = getEnvDouble("ODC_PUSH_DIR_Z", push_dir_W(2));
+  if (push_dir_W.norm() < 1e-9) {
+    std::cerr << "ODC_PUSH_DIR vector is near zero. Falling back to +x."
+              << std::endl;
+    push_dir_W = Eigen::Vector3d(1.0, 0.0, 0.0);
+  }
   tau_bias_scale = getEnvDouble("ODC_TAU_BIAS_SCALE", tau_bias_scale);
   print_variable_inertia =
       getEnvBool("ODC_PRINT_IG", print_variable_inertia);
@@ -459,6 +467,14 @@ int main(int argc, char **argv) {
   const double sine_vx_amp = getEnvDouble("ODC_SINE_VX_AMP", 0.25);
   const double sine_vx_period = getEnvDouble("ODC_SINE_VX_PERIOD", 4.0);
   const double sine_start_time = getEnvDouble("ODC_SINE_START_TIME", 4.0);
+  const bool use_step_speed_profile = getEnvBool("ODC_STEP_SPEED", false);
+  const double step_speed_time = getEnvDouble("ODC_STEP_SPEED_TIME", 10.0);
+  const double step_vx_1 = getEnvDouble("ODC_STEP_VX_1", 1.0);
+  const double step_vx_2 = getEnvDouble("ODC_STEP_VX_2", 1.8);
+  const double step_vy_1 = getEnvDouble("ODC_STEP_VY_1", target_speed_y);
+  const double step_vy_2 = getEnvDouble("ODC_STEP_VY_2", step_vy_1);
+  const double step_speed_ramp_time =
+      getEnvDouble("ODC_STEP_SPEED_RAMP_TIME", 3.0);
   const bool use_sine_turn_profile = getEnvBool("ODC_SINE_TURN", false);
   const double sine_wz_base = getEnvDouble("ODC_SINE_WZ_BASE", 0.0);
   const double sine_wz_amp = getEnvDouble("ODC_SINE_WZ_AMP", 0.35);
@@ -468,6 +484,8 @@ int main(int argc, char **argv) {
   const bool log_prediction_error =
       getEnvBool("ODC_LOG_PREDICTION_ERROR", false);
   const double gait_swing_time = getEnvDouble("ODC_TSWING", 0.45);
+  const double gait_switch_force_threshold =
+      getEnvDouble("ODC_GAIT_SWITCH_FORCE_THRESHOLD", 100.0);
   const double torque_limit_scale =
       getEnvDouble("ODC_TORQUE_LIMIT_SCALE", 1.0);
   const double walk_leg_pd_scale =
@@ -573,9 +591,11 @@ int main(int argc, char **argv) {
   MPC MPC_solv(dt_200Hz);
   GaitScheduler gaitScheduler(gait_swing_time, mj_model->opt.timestep);
   gaitScheduler.useTouchSwitchForce = gait_switch_force_source != "estimate";
+  gaitScheduler.FzThrehold = gait_switch_force_threshold;
   std::cout << "[GaitScheduler] tSwing=" << gait_swing_time
             << " switch_force_source="
             << (gaitScheduler.useTouchSwitchForce ? "touch" : "estimate")
+            << " switch_force_threshold=" << gaitScheduler.FzThrehold
             << std::endl;
   if (use_leg_lambda_scale) {
     std::cout << "[LegScale] lambda=" << leg_lambda_scale << std::endl;
@@ -592,6 +612,12 @@ int main(int argc, char **argv) {
               << " vx_amp=" << sine_vx_amp
               << " period=" << sine_vx_period
               << " start_time=" << sine_start_time << std::endl;
+  }
+  if (use_step_speed_profile) {
+    std::cout << "[SpeedProfile] step vx=" << step_vx_1 << "->" << step_vx_2
+              << " vy=" << step_vy_1 << "->" << step_vy_2
+              << " step_time=" << step_speed_time
+              << " ramp_time=" << step_speed_ramp_time << std::endl;
   }
   if (use_sine_turn_profile) {
     std::cout << "[TurnProfile] sine wz_base=" << sine_wz_base
@@ -635,6 +661,9 @@ int main(int argc, char **argv) {
   footPlacement.kp_vy = getEnvDouble("ODC_FOOT_KP_VY", 0.03);
   footPlacement.kp_wz = getEnvDouble("ODC_FOOT_KP_WZ", 0.03);
   footPlacement.stepHeight = getEnvDouble("ODC_FOOT_STEP_HEIGHT", 0.205);
+  footPlacement.xOff_L = getEnvDouble("ODC_FOOT_X_OFFSET_L", -0.01);
+  footPlacement.yOff_L = getEnvDouble("ODC_FOOT_Y_OFFSET_L", 0.01);
+  footPlacement.zOff_W = getEnvDouble("ODC_FOOT_Z_OFFSET_W", -0.035);
   footPlacement.firstStepLateralBiasScale = 0.25;
   footPlacement.firstStepHeightScale = 0.6;
   footPlacement.legLength = stand_legLength;
@@ -722,6 +751,7 @@ int main(int argc, char **argv) {
   bool fallDetected = false;
   double fallTime = simEndTime;
   bool walkCommandInitialized = false;
+  bool stepSpeedSecondCommanded = false;
   double nextIgPrintTime = 0.0;
   double nextFrPrintTime = 0.0;
   double nextMpcTimingPrintTime = 0.0;
@@ -759,6 +789,7 @@ int main(int argc, char **argv) {
       mj_interface.dataBusWrite(RobotState);
 
       double command_speed_x = target_speed_x;
+      double command_speed_y = target_speed_y;
       double command_wz = 0.0;
       if (use_sine_speed_profile) {
         command_speed_x = sine_vx_base;
@@ -767,6 +798,10 @@ int main(int argc, char **argv) {
               6.283185307179586 * (simTime - sine_start_time) / sine_vx_period;
           command_speed_x = sine_vx_base + sine_vx_amp * std::sin(phase);
         }
+      }
+      if (use_step_speed_profile) {
+        command_speed_x = (simTime >= step_speed_time) ? step_vx_2 : step_vx_1;
+        command_speed_y = (simTime >= step_speed_time) ? step_vy_2 : step_vy_1;
       }
       if (use_sine_turn_profile) {
         command_wz = sine_wz_base;
@@ -789,7 +824,7 @@ int main(int argc, char **argv) {
       RobotState.tau_phase_gate_min = tau_phase_gate_min;
       RobotState.tau_phase_gate_max = tau_phase_gate_max;
       RobotState.target_speed_x = command_speed_x;
-      RobotState.target_speed_y = target_speed_y;
+      RobotState.target_speed_y = command_speed_y;
       RobotState.push_force_cmd = pushActive ? push_force : 0.0;
       RobotState.push_start_time = push_start_time;
       RobotState.push_duration = push_duration;
@@ -811,9 +846,13 @@ int main(int argc, char **argv) {
       if (simTime > startWalkingTime) {
         if (!walkCommandInitialized) {
           jsInterp.setVxDesLPara(
-              use_sine_speed_profile ? sine_vx_base : target_speed_x,
+              use_step_speed_profile ? step_vx_1
+                                     : (use_sine_speed_profile ? sine_vx_base
+                                                               : target_speed_x),
               startupSpeedRampDuration);
-          jsInterp.setVyDesLPara(target_speed_y, startupSpeedRampDuration);
+          jsInterp.setVyDesLPara(use_step_speed_profile ? step_vy_1
+                                                        : target_speed_y,
+                                 startupSpeedRampDuration);
           jsInterp.setWzDesLPara(
               use_sine_turn_profile ? sine_wz_base : 0.0,
               startupSpeedRampDuration);
@@ -821,6 +860,12 @@ int main(int argc, char **argv) {
         }
         if (use_sine_speed_profile && simTime >= sine_start_time) {
           jsInterp.setVxDesLPara(command_speed_x, mj_model->opt.timestep);
+        }
+        if (use_step_speed_profile && simTime >= step_speed_time &&
+            !stepSpeedSecondCommanded) {
+          jsInterp.setVxDesLPara(command_speed_x, step_speed_ramp_time);
+          jsInterp.setVyDesLPara(command_speed_y, step_speed_ramp_time);
+          stepSpeedSecondCommanded = true;
         }
         if (use_sine_turn_profile && simTime >= sine_wz_start_time) {
           jsInterp.setWzDesLPara(command_wz, mj_model->opt.timestep);
@@ -880,7 +925,8 @@ int main(int argc, char **argv) {
                       << " source="
                       << (gaitScheduler.useTouchSwitchForce ? "touch"
                                                             : "estimate")
-                      << " threshold=100" << std::endl;
+                      << " threshold=" << gaitScheduler.FzThrehold
+                      << std::endl;
           }
           lastLegState = RobotState.legState;
         }
@@ -1087,8 +1133,8 @@ int main(int argc, char **argv) {
       logger.recItermData("use_tau_bias",
                           use_tau_bias_feedforward ? 1.0 : 0.0);
       logger.recItermData("leg_mass_fraction", leg_mass_fraction);
-      logger.recItermData("speed_ref_x", target_speed_x);
-      logger.recItermData("speed_ref_y", target_speed_y);
+      logger.recItermData("speed_ref_x", command_speed_x);
+      logger.recItermData("speed_ref_y", command_speed_y);
       logger.recItermData("push_force_cmd", RobotState.push_force_cmd);
       logger.recItermData("gait_phase", RobotState.phi);
       logger.recItermData("leg_state", static_cast<double>(RobotState.legState));
@@ -1135,8 +1181,8 @@ int main(int argc, char **argv) {
                  << static_cast<int>(exp) << ","
                  << (use_variable_inertia_model ? 1 : 0) << ","
                  << (use_tau_bias_feedforward ? 1 : 0) << ","
-                 << leg_mass_fraction << "," << target_speed_x << ","
-                 << target_speed_y << ","
+                 << leg_mass_fraction << "," << command_speed_x << ","
+                 << command_speed_y << ","
                  << (pushActive ? 1 : 0) << "," << RobotState.push_force_cmd
                  << "," << RobotState.step_count << "," << RobotState.phi << ","
                  << static_cast<int>(RobotState.legState) << ","
