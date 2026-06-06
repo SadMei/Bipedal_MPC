@@ -20,6 +20,7 @@ class FootPlacement {
 		double xOff_L{-0.01};
 		double yOff_L{0.01};
 		double zOff_W{-0.035};
+		double lookaheadTime{-1.0};
 		double firstStepLateralBiasScale{0.25};
 		double firstStepHeightScale{0.6};
 		double phi{0};    // phase varialbe for trajectory generation, must between 0 and 1

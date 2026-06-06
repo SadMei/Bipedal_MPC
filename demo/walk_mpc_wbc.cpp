@@ -664,9 +664,18 @@ int main(int argc, char **argv) {
   footPlacement.xOff_L = getEnvDouble("ODC_FOOT_X_OFFSET_L", -0.01);
   footPlacement.yOff_L = getEnvDouble("ODC_FOOT_Y_OFFSET_L", 0.01);
   footPlacement.zOff_W = getEnvDouble("ODC_FOOT_Z_OFFSET_W", -0.035);
+  footPlacement.lookaheadTime =
+      getEnvDouble("ODC_FOOT_LOOKAHEAD_TIME", -1.0);
   footPlacement.firstStepLateralBiasScale = 0.25;
   footPlacement.firstStepHeightScale = 0.6;
   footPlacement.legLength = stand_legLength;
+  std::cout << "[FootPlacement] kp_vx=" << footPlacement.kp_vx
+            << " xOff_L=" << footPlacement.xOff_L
+            << " lookahead_time="
+            << (footPlacement.lookaheadTime > 1e-6
+                    ? footPlacement.lookaheadTime
+                    : gait_swing_time)
+            << " gait_tSwing=" << gait_swing_time << std::endl;
 
   mju_copy(mj_data->qpos, mj_model->key_qpos, mj_model->nq * 1);
 

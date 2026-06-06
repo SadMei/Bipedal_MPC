@@ -73,12 +73,13 @@ void FootPlacement::getSwingPos() {
 	KP(0,0)=kp_vx; KP(1,1)=kp_vy; KP(2,2)=0;
 	Rz<<cos(yawCur),-sin(yawCur),0, sin(yawCur),cos(yawCur),0, 0,0,1;
 	KP=Rz*KP*Rz.transpose();
+	const double tPreview = lookaheadTime > 1e-6 ? lookaheadTime : tSwing;
 
 	// Raibert 理想目标 (Unconstrained)
-	Eigen::Vector3d posDes_Ideal = hipPos_W + KP*(desV_W-curV_W)*(-1) + 0.5*tSwing*curV_W + curV_W*(1-phi)*tSwing;
+	Eigen::Vector3d posDes_Ideal = hipPos_W + KP*(desV_W-curV_W)*(-1) + 0.5*tPreview*curV_W + curV_W*(1-phi)*tPreview;
 
 	// 转向修正
-	double thetaF = yawCur+theta0+omegaZ_W*(1-phi)*tSwing+0.5*omegaZ_W*tSwing+kp_wz*(omegaZ_W-desWz_W);
+	double thetaF = yawCur+theta0+omegaZ_W*(1-phi)*tPreview+0.5*omegaZ_W*tPreview+kp_wz*(omegaZ_W-desWz_W);
 	posDes_Ideal(0)+=0.5*hip_width* (cos(thetaF)-cos(yawCur+theta0));
 	posDes_Ideal(1)+=0.5*hip_width* (sin(thetaF)-sin(yawCur+theta0));
 

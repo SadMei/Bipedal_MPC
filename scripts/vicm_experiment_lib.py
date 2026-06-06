@@ -204,6 +204,7 @@ def make_env(
     push_dir_y: float = 0.0,
     push_dir_z: float = 0.0,
     gait_switch_threshold: float = 100.0,
+    foot_lookahead_time: float | None = None,
     wbc_delta_fr_weight: float | None = None,
     wbc_delta_ddq_weight: float | None = None,
 ) -> tuple[dict[str, str], float]:
@@ -259,6 +260,8 @@ def make_env(
         env["ODC_WBC_DELTA_FR_WEIGHT"] = f"{wbc_delta_fr_weight:.12g}"
     if wbc_delta_ddq_weight is not None:
         env["ODC_WBC_DELTA_DDQ_WEIGHT"] = f"{wbc_delta_ddq_weight:.12g}"
+    if foot_lookahead_time is not None:
+        env["ODC_FOOT_LOOKAHEAD_TIME"] = f"{foot_lookahead_time:.12g}"
     return env, effective_lf
 
 
