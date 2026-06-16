@@ -37,6 +37,8 @@ TRIAL_FIELDS = [
     "push_force",
     "push_start",
     "push_duration",
+    "push_trigger_mode",
+    "push_trigger_phi",
     "rep",
     "fall",
     "recovered",
@@ -175,12 +177,12 @@ def plot_recovery(out_dir: Path, rows: list[dict[str, object]], threshold: float
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lambda-scale", type=float, default=1.7)
-    parser.add_argument("--forces", default="0 100 150 200 250 300")
+    parser.add_argument("--forces", default="0 100 200 300 400")
     parser.add_argument("--directions", default="0 45 90 135 180 225 270 315")
-    parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--controllers", default="srbm,vicm_ac")
-    parser.add_argument("--sim-end", type=float, default=20.0)
-    parser.add_argument("--vx", type=float, default=1.5)
+    parser.add_argument("--sim-end", type=float, default=15.0)
+    parser.add_argument("--vx", type=float, default=1.2)
     parser.add_argument("--tswing", type=float, default=0.45)
     parser.add_argument("--posrot-att-scale", type=float, default=0.35)
     parser.add_argument("--posrot-pos-scale", type=float, default=1.0)
@@ -189,6 +191,8 @@ def main() -> int:
     parser.add_argument("--ig-dot-filter-tau", type=float, default=0.01)
     parser.add_argument("--push-start", type=float, default=8.0)
     parser.add_argument("--push-duration", type=float, default=0.15)
+    parser.add_argument("--push-trigger-mode", choices=["time", "phase"], default="phase")
+    parser.add_argument("--push-trigger-phi", type=float, default=0.5)
     parser.add_argument("--sine-wz-amp", type=float, default=0.0)
     parser.add_argument("--sine-wz-period", type=float, default=4.0)
     parser.add_argument("--sine-wz-start", type=float, default=4.0)
@@ -251,6 +255,8 @@ def main() -> int:
                         push_dir_x=push_x,
                         push_dir_y=push_y,
                         push_dir_z=0.0,
+                        push_trigger_mode=args.push_trigger_mode,
+                        push_trigger_phi=args.push_trigger_phi,
                         gait_switch_threshold=args.gait_switch_threshold,
                     )
                     start = time.monotonic()
@@ -279,6 +285,8 @@ def main() -> int:
                         "push_force": force,
                         "push_start": args.push_start,
                         "push_duration": args.push_duration,
+                        "push_trigger_mode": args.push_trigger_mode,
+                        "push_trigger_phi": args.push_trigger_phi,
                         "rep": rep,
                         **metrics,
                         "recovered": recovered,

@@ -203,6 +203,8 @@ def make_env(
     push_dir_x: float = 1.0,
     push_dir_y: float = 0.0,
     push_dir_z: float = 0.0,
+    push_trigger_mode: str = "time",
+    push_trigger_phi: float = 0.5,
     gait_switch_threshold: float = 100.0,
     foot_lookahead_time: float | None = None,
     wbc_delta_fr_weight: float | None = None,
@@ -248,6 +250,8 @@ def make_env(
             "ODC_PUSH_DIR_X": f"{push_dir_x:.12g}",
             "ODC_PUSH_DIR_Y": f"{push_dir_y:.12g}",
             "ODC_PUSH_DIR_Z": f"{push_dir_z:.12g}",
+            "ODC_PUSH_TRIGGER_MODE": push_trigger_mode,
+            "ODC_PUSH_TRIGGER_PHI": f"{push_trigger_phi:.12g}",
         }
     )
     if use_lambda:

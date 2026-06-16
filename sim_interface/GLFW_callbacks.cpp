@@ -7,6 +7,10 @@ Feel free to use in any purpose, and cite OpenLoong-Dynamics-Control in any styl
 */
 #include "GLFW_callbacks.h"
 
+#include <cstdio>
+#include <fstream>
+#include <vector>
+
 UIctr::UIctr(mjModel *modelIn, mjData *dataIn) {
     mj_model=modelIn;
     mj_data=dataIn;
@@ -49,8 +53,10 @@ void UIctr::iniGLFW() {
 }
 
 // create window, make OpenGL context current, request v-sync, adjust view, bond callbacks, etc.
-void UIctr::createWindow(const char* windowTitle, bool saveVideo) {
+void UIctr::createWindow(const char* windowTitle, bool saveVideo, bool hidden) {
+    glfwWindowHint(GLFW_VISIBLE, hidden ? GLFW_FALSE : GLFW_TRUE);
     window=glfwCreateWindow(width, height, windowTitle, NULL, NULL);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
     mjv_defaultCamera(&cam);
@@ -67,7 +73,8 @@ void UIctr::createWindow(const char* windowTitle, bool saveVideo) {
     if (isTrack) {
         cam.lookat[2] += 0.8;
         cam.type = mjCAMERA_TRACKING;
-        cam.trackbodyid = 1;
+        const int base_body_id = mj_name2id(mj_model, mjOBJ_BODY, "base_link");
+        cam.trackbodyid = base_body_id >= 0 ? base_body_id : 1;
     }
     else
         cam.type = mjCAMERA_FREE;
@@ -99,6 +106,54 @@ void UIctr::createWindow(const char* windowTitle, bool saveVideo) {
         if( !file )
             mju_error("Could not open rgbfile for writing");
     }
+}
+
+bool UIctr::saveSnapshotPPM(const std::string &path) {
+    if (window == nullptr) {
+        return false;
+    }
+
+    mjrRect viewport = {0, 0, 0, 0};
+    glfwMakeContextCurrent(window);
+    glfwGetFramebufferSize(window, &viewport.width, &viewport.height);
+    if (viewport.width <= 0 || viewport.height <= 0) {
+        return false;
+    }
+
+    mjvCamera snapshot_cam = cam;
+    const int base_body_id = mj_name2id(mj_model, mjOBJ_BODY, "base_link");
+    if (base_body_id >= 0) {
+        snapshot_cam.type = mjCAMERA_FREE;
+        snapshot_cam.fixedcamid = -1;
+        snapshot_cam.trackbodyid = -1;
+        snapshot_cam.lookat[0] = mj_data->xpos[3 * base_body_id + 0];
+        snapshot_cam.lookat[1] = mj_data->xpos[3 * base_body_id + 1];
+        snapshot_cam.lookat[2] = mj_data->xpos[3 * base_body_id + 2] + 0.05;
+        snapshot_cam.azimuth = 110.0;
+        snapshot_cam.elevation = -10.0;
+        snapshot_cam.distance = 3.3;
+    }
+
+    mjv_updateScene(mj_model, mj_data, &opt, NULL, &snapshot_cam, mjCAT_ALL, &scn);
+    mjr_render(viewport, &scn, &con);
+
+    std::vector<unsigned char> rgb(
+        static_cast<size_t>(3 * viewport.width * viewport.height));
+    std::vector<float> depth(
+        static_cast<size_t>(viewport.width * viewport.height));
+    mjr_readPixels(rgb.data(), depth.data(), viewport, &con);
+
+    std::ofstream out(path, std::ios::binary);
+    if (!out.is_open()) {
+        return false;
+    }
+    out << "P6\n" << viewport.width << " " << viewport.height << "\n255\n";
+    for (int y = viewport.height - 1; y >= 0; --y) {
+        const auto offset = static_cast<size_t>(3 * y * viewport.width);
+        out.write(reinterpret_cast<const char *>(rgb.data() + offset),
+                  static_cast<std::streamsize>(3 * viewport.width));
+    }
+    return out.good();
 }
 
 void UIctr::updateScene() {

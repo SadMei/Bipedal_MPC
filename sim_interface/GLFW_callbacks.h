@@ -39,8 +39,9 @@ public:
 
     UIctr(mjModel *modelIn, mjData *dataIn);
     void iniGLFW();
-    void createWindow(const char * windowTitle, bool saveVideo);
+    void createWindow(const char * windowTitle, bool saveVideo, bool hidden=false);
     void updateScene();
+    bool saveSnapshotPPM(const std::string &path);
 
     // keyboard callback
     void Keyboard(int key, int scancode, int act, int mods);
@@ -77,5 +78,4 @@ private:
     mjvScene scn;                       // abstract scene
     mjrContext con;                     // custom GPU context
 };
-
 

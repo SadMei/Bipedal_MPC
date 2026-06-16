@@ -25,12 +25,14 @@ Feel free to use in any purpose, and cite OpenLoong-Dynamics-Control in any styl
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <sstream>
 #include <string>
+#include <vector>
 
 const double dt = 0.001;
 const double dt_200Hz = 0.005;
@@ -184,6 +186,22 @@ int getEnvInt(const char *name, int default_value) {
 std::string getEnvString(const char *name, const std::string &default_value) {
   const char *value = std::getenv(name);
   return value == nullptr ? default_value : std::string(value);
+}
+
+std::vector<double> parseEnvDoubleList(const std::string &text) {
+  std::vector<double> values;
+  if (text.empty()) {
+    return values;
+  }
+
+  std::string normalized = text;
+  std::replace(normalized.begin(), normalized.end(), ',', ' ');
+  std::istringstream input(normalized);
+  double value = 0.0;
+  while (input >> value) {
+    values.push_back(value);
+  }
+  return values;
 }
 
 bool parseMpcStateWeights(const std::string &text,
@@ -382,6 +400,8 @@ int main(int argc, char **argv) {
   double push_force = 0.0;     // exp = 1 / 4, world-frame push along push_dir_W
   double push_start_time = 6.0;  // exp = 1 / 4
   double push_duration = 0.15;   // exp = 1 / 4
+  std::string push_trigger_mode = "time";
+  double push_trigger_phi = 0.5;
   double tau_bias_scale = 1.0;
   bool print_variable_inertia = false;
   double ig_print_interval = 0.5; // seconds
@@ -436,6 +456,10 @@ int main(int argc, char **argv) {
   push_force = getEnvDouble("ODC_PUSH_FORCE", push_force);
   push_start_time = getEnvDouble("ODC_PUSH_START_TIME", push_start_time);
   push_duration = getEnvDouble("ODC_PUSH_DURATION", push_duration);
+  push_trigger_mode = getEnvString("ODC_PUSH_TRIGGER_MODE", push_trigger_mode);
+  const bool push_phase_trigger_enabled =
+      getEnvBool("ODC_PUSH_PHASE_TRIGGER", push_trigger_mode == "phase");
+  push_trigger_phi = getEnvDouble("ODC_PUSH_TRIGGER_PHI", push_trigger_phi);
   push_dir_W(0) = getEnvDouble("ODC_PUSH_DIR_X", push_dir_W(0));
   push_dir_W(1) = getEnvDouble("ODC_PUSH_DIR_Y", push_dir_W(1));
   push_dir_W(2) = getEnvDouble("ODC_PUSH_DIR_Z", push_dir_W(2));
@@ -455,6 +479,23 @@ int main(int argc, char **argv) {
       getEnvDouble("ODC_MPC_TIMING_PRINT_INTERVAL", 1.0);
   const bool print_gait_switch = getEnvBool("ODC_PRINT_GAIT_SWITCH", false);
   const bool headless = getEnvBool("ODC_HEADLESS", false);
+  const bool snapshot_enabled = getEnvBool("ODC_SNAPSHOT_ENABLE", false);
+  const std::string snapshot_dir =
+      getEnvString("ODC_SNAPSHOT_DIR", "../record/walking_snapshots");
+  const std::string snapshot_prefix =
+      getEnvString("ODC_SNAPSHOT_PREFIX", "walking_snapshot");
+  const double snapshot_start_time =
+      getEnvDouble("ODC_SNAPSHOT_START_TIME", 10.0);
+  const double snapshot_interval =
+      std::max(getEnvDouble("ODC_SNAPSHOT_INTERVAL", 1.0), mj_model->opt.timestep);
+  const std::vector<double> snapshot_times =
+      parseEnvDoubleList(getEnvString("ODC_SNAPSHOT_TIMES", ""));
+  const int snapshot_count =
+      snapshot_times.empty()
+          ? std::max(0, getEnvInt("ODC_SNAPSHOT_COUNT", 10))
+          : static_cast<int>(snapshot_times.size());
+  const bool snapshot_exit_after_capture =
+      getEnvBool("ODC_SNAPSHOT_EXIT_AFTER_CAPTURE", false);
   const bool use_linear_inertia_prediction =
       getEnvBool("ODC_PREDICT_IG_LINEAR", false);
   const bool use_linear_tau_dynamics =
@@ -600,6 +641,11 @@ int main(int argc, char **argv) {
   if (use_leg_lambda_scale) {
     std::cout << "[LegScale] lambda=" << leg_lambda_scale << std::endl;
   }
+  std::cout << "[Push] trigger_mode="
+            << (push_phase_trigger_enabled ? "phase" : "time")
+            << " warmup_time=" << push_start_time
+            << " trigger_phi=" << push_trigger_phi
+            << " duration=" << push_duration << std::endl;
   std::cout << "[VICM] linear_inertia_prediction="
             << (use_linear_inertia_prediction ? 1 : 0)
             << " linear_tau_dynamics=" << (use_linear_tau_dynamics ? 1 : 0)
@@ -629,6 +675,17 @@ int main(int argc, char **argv) {
     std::cout << "[PredictionError] logging to " << pred_error_path
               << std::endl;
   }
+  if (snapshot_enabled) {
+    std::filesystem::create_directories(snapshot_dir);
+    std::cout << "[Snapshot] enabled dir=" << snapshot_dir
+              << " prefix=" << snapshot_prefix
+              << " start="
+              << (snapshot_times.empty() ? snapshot_start_time
+                                         : snapshot_times.front())
+              << " interval=" << snapshot_interval
+              << " count=" << snapshot_count
+              << " hidden=" << (headless ? 1 : 0) << std::endl;
+  }
   PVT_Ctr pvtCtr(mj_model->opt.timestep, "../common/joint_ctrl_config.json");
   pvtCtr.setTorqueLimitScale(torque_limit_scale);
   std::cout << "[PVT] torque_limit_scale=" << torque_limit_scale
@@ -636,10 +693,12 @@ int main(int argc, char **argv) {
   FootPlacement footPlacement;
   JoyStickInterpreter jsInterp(mj_model->opt.timestep);
 
-  if (!headless) {
+  const bool render_enabled = !headless || snapshot_enabled;
+  if (render_enabled) {
     uiController.iniGLFW();
     uiController.enableTracking();
-    uiController.createWindow("Demo", false);
+    uiController.createWindow(snapshot_enabled ? "Walking snapshots" : "Demo",
+                              false, headless && snapshot_enabled);
   }
 
   const double stand_legLength = getEnvDouble("ODC_STAND_LEG_LENGTH", 1.05);
@@ -770,6 +829,13 @@ int main(int argc, char **argv) {
   double mpcTimingQpMsSum = 0.0;
   double mpcTimingQpMsMax = 0.0;
   OneStepPredictionFrame predictionFrame;
+  int snapshot_index = 0;
+  double next_snapshot_time =
+      snapshot_times.empty() ? snapshot_start_time : snapshot_times.front();
+  bool pushPhaseTriggered = false;
+  double pushActualStartTime = push_start_time;
+  double lastPushPhi = std::numeric_limits<double>::quiet_NaN();
+  DataBus::LegState lastPushLegState = DataBus::DSt;
 
   mjtNum simstart = mj_data->time;
   double simTime = mj_data->time;
@@ -778,9 +844,11 @@ int main(int argc, char **argv) {
     while (mj_data->time - simstart < 1.0 / 60.0 && uiController.runSim) {
       const bool pushEnabled =
           (exp == 1 || exp == 4) && push_force > 0.0 && push_duration > 0.0;
+      const bool pushReady =
+          !push_phase_trigger_enabled || pushPhaseTriggered;
       const bool pushActive =
-          pushEnabled && mj_data->time >= push_start_time &&
-          mj_data->time < (push_start_time + push_duration);
+          pushEnabled && pushReady && mj_data->time >= pushActualStartTime &&
+          mj_data->time < (pushActualStartTime + push_duration);
       for (int i = 0; i < 6; ++i) {
         mj_data->xfrc_applied[6 * baseBodyId + i] = 0.0;
       }
@@ -942,6 +1010,30 @@ int main(int argc, char **argv) {
       }
 
       RobotState.step_count = stepCount;
+
+      if (pushEnabled && push_phase_trigger_enabled && !pushPhaseTriggered &&
+          simTime >= push_start_time) {
+        const bool phaseStateValid =
+            RobotState.motionState == DataBus::Walk &&
+            (RobotState.legState == DataBus::LSt ||
+             RobotState.legState == DataBus::RSt);
+        if (phaseStateValid) {
+          const double phiNow = RobotState.phi;
+          const bool sameLegState = lastPushLegState == RobotState.legState;
+          const bool crossedTriggerPhi =
+              std::isfinite(lastPushPhi) && sameLegState &&
+              lastPushPhi < push_trigger_phi && phiNow >= push_trigger_phi;
+          if (crossedTriggerPhi) {
+            pushPhaseTriggered = true;
+            pushActualStartTime = simTime + mj_model->opt.timestep;
+          }
+          lastPushPhi = phiNow;
+          lastPushLegState = RobotState.legState;
+        } else {
+          lastPushPhi = std::numeric_limits<double>::quiet_NaN();
+          lastPushLegState = DataBus::DSt;
+        }
+      }
 
       MPC_count = MPC_count + 1;
       if (MPC_count > (dt_200Hz / dt - 1)) {
@@ -1244,6 +1336,33 @@ int main(int argc, char **argv) {
                  << ","
                  << (RobotState.fall_detected ? 1 : 0) << "\n";
 
+      if (snapshot_enabled && snapshot_index < snapshot_count &&
+          simTime + 0.5 * mj_model->opt.timestep >= next_snapshot_time) {
+        std::ostringstream path;
+        path << snapshot_dir << "/" << snapshot_prefix << "_"
+             << std::setw(2) << std::setfill('0') << snapshot_index
+             << std::setfill(' ') << "_t" << std::fixed
+             << std::setprecision(3) << simTime << ".ppm";
+        if (uiController.saveSnapshotPPM(path.str())) {
+          std::cout << "[Snapshot] saved " << path.str() << std::endl;
+        } else {
+          std::cerr << "[Snapshot] failed to save " << path.str()
+                    << std::endl;
+        }
+        ++snapshot_index;
+        if (snapshot_times.empty()) {
+          next_snapshot_time =
+              snapshot_start_time + snapshot_interval * snapshot_index;
+        } else if (snapshot_index < static_cast<int>(snapshot_times.size())) {
+          next_snapshot_time = snapshot_times[snapshot_index];
+        } else {
+          next_snapshot_time = std::numeric_limits<double>::infinity();
+        }
+        if (snapshot_exit_after_capture && snapshot_index >= snapshot_count) {
+          break;
+        }
+      }
+
       if (RobotState.fall_detected) {
         fallDetected = true;
         fallTime = simTime;
@@ -1251,7 +1370,9 @@ int main(int argc, char **argv) {
       }
     }
 
-    if (fallDetected || mj_data->time >= simEndTime) {
+    if (fallDetected || mj_data->time >= simEndTime ||
+        (snapshot_exit_after_capture && snapshot_enabled &&
+         snapshot_index >= snapshot_count)) {
       break;
     }
 
@@ -1271,7 +1392,7 @@ int main(int argc, char **argv) {
                << RobotState.controller_mass << ","
                << RobotState.controller_leg_mass << "\n";
 
-  if (!headless) {
+  if (render_enabled) {
     uiController.Close();
   } else {
     mj_deleteData(mj_data);
