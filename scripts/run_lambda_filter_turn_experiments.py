@@ -308,7 +308,13 @@ def run_trial(
     args: argparse.Namespace,
 ) -> TrialResult:
     uncertainty = trial_uncertainty_profile(rep, args)
-    case = f"lam{token(lambda_scale)}_{controller}_turn_posrot{token(args.posrot_att_scale)}_filtertau_r{rep}"
+    variant = ""
+    if controller == "vicm" and args.predict_ig_linear:
+        variant += "_igpred"
+    if args.wrench_rate_weight > 0.0:
+        rate_token = f"{args.wrench_rate_weight:.0e}".replace("e-", "em")
+        variant += f"_du{rate_token}"
+    case = f"lam{token(lambda_scale)}_{controller}{variant}_turn_posrot{token(args.posrot_att_scale)}_filtertau_r{rep}"
     env = os.environ.copy()
     env.update(
         {
@@ -325,8 +331,11 @@ def run_trial(
             "ODC_TAU_BIAS_SCALE": f"{args.tau_bias_scale:.12g}",
             "ODC_TAU_NON_NORM_LIMIT": f"{args.tau_non_norm_limit:.12g}",
             "ODC_IG_DOT_FILTER_TAU": f"{args.ig_dot_filter_tau:.12g}",
-            "ODC_PREDICT_IG_LINEAR": "0",
+            "ODC_PREDICT_IG_LINEAR": (
+                "1" if controller == "vicm" and args.predict_ig_linear else "0"
+            ),
             "ODC_LINEAR_TAU_DYNAMICS": "1" if controller == "vicm" else "0",
+            "ODC_MPC_WRENCH_RATE_WEIGHT": f"{args.wrench_rate_weight:.12g}",
             "ODC_MPC_L_DIAG": args.mpc_l_diag,
             "ODC_TORQUE_LIMIT_SCALE": f"{args.torque_limit_scale:.12g}",
             "ODC_WALK_LEG_PD_SCALE": f"{args.walk_leg_pd_scale:.12g}",
@@ -428,6 +437,8 @@ def main() -> int:
     parser.add_argument("--tau-bias-scale", type=float, default=1.0)
     parser.add_argument("--tau-non-norm-limit", type=float, default=0.0)
     parser.add_argument("--ig-dot-filter-tau", type=float, default=0.01)
+    parser.add_argument("--predict-ig-linear", action="store_true")
+    parser.add_argument("--wrench-rate-weight", type=float, default=0.0)
     parser.add_argument("--sine-wz-amp", type=float, default=0.25)
     parser.add_argument("--sine-wz-period", type=float, default=4.0)
     parser.add_argument("--sine-wz-start", type=float, default=4.0)
@@ -442,6 +453,7 @@ def main() -> int:
     parser.add_argument("--fixed-push-duration", type=float, default=0.10)
     parser.add_argument("--fixed-push-angle", type=float, default=0.0)
     parser.add_argument("--fixed-push-phi", type=float, default=0.5)
+    parser.add_argument("--skip-srbm", action="store_true")
     parser.add_argument("--stop-threshold", type=float, default=8.0)
     parser.add_argument("--stop-consecutive", type=int, default=2)
     parser.add_argument("--resume-dir", type=Path)
@@ -481,6 +493,8 @@ def main() -> int:
         "tau_bias_scale": args.tau_bias_scale,
         "tau_non_norm_limit": args.tau_non_norm_limit,
         "ig_dot_filter_tau": args.ig_dot_filter_tau,
+        "predict_ig_linear": args.predict_ig_linear,
+        "wrench_rate_weight": args.wrench_rate_weight,
         "wbc_delta_fr_weight": "default_1e1",
         "wbc_delta_ddq_weight": "default_1e7",
         "wbc_qp_termination": "1ms_wall_clock_and_nWSR_200",
@@ -499,6 +513,7 @@ def main() -> int:
         "fixed_push_duration": args.fixed_push_duration,
         "fixed_push_angle": args.fixed_push_angle,
         "fixed_push_phi": args.fixed_push_phi,
+        "skip_srbm": args.skip_srbm,
         "uncertainty_repetition_1": "deterministic_no_noise_no_push",
         "uncertainty_repetitions_2_to_5": (
             "scaled_seeded_sensor_noise_plus_fixed_phase_push"
@@ -578,28 +593,29 @@ def main() -> int:
                 break
             lambda_scale = round(lambda_scale + args.step, 10)
 
-        print("=== SRBM over completed lambda values ===", flush=True)
-        for lambda_scale in completed_lambdas:
-            print(f"=== SRBM lambda={lambda_scale:.3f} ===", flush=True)
-            for rep in range(args.rep_start, args.repeats + 1):
-                if (lambda_scale, "srbm", rep) in completed:
+        if not args.skip_srbm:
+            print("=== SRBM over completed lambda values ===", flush=True)
+            for lambda_scale in completed_lambdas:
+                print(f"=== SRBM lambda={lambda_scale:.3f} ===", flush=True)
+                for rep in range(args.rep_start, args.repeats + 1):
+                    if (lambda_scale, "srbm", rep) in completed:
+                        print(
+                            f"skip completed: lambda={lambda_scale:.3f} srbm rep={rep}",
+                            flush=True,
+                        )
+                        continue
+                    result = run_trial(out_dir, lambda_scale, "srbm", rep, args)
+                    writer.writerow(result.__dict__)
+                    f.flush()
+                    all_results.append(result)
+                    completed.add((lambda_scale, "srbm", rep))
                     print(
-                        f"skip completed: lambda={lambda_scale:.3f} srbm rep={rep}",
+                        f"{result.case}: final={result.final_time:.3f}s "
+                        f"fall={result.fall} wz_rms={result.rms_wz_err:.3f} "
+                        f"yaw_rms={result.rms_yaw_err:.3f}",
                         flush=True,
                     )
-                    continue
-                result = run_trial(out_dir, lambda_scale, "srbm", rep, args)
-                writer.writerow(result.__dict__)
-                f.flush()
-                all_results.append(result)
-                completed.add((lambda_scale, "srbm", rep))
-                print(
-                    f"{result.case}: final={result.final_time:.3f}s "
-                    f"fall={result.fall} wz_rms={result.rms_wz_err:.3f} "
-                    f"yaw_rms={result.rms_yaw_err:.3f}",
-                    flush=True,
-                )
-            write_csv(out_dir / "summary.csv", summarize(all_results))
+                write_csv(out_dir / "summary.csv", summarize(all_results))
 
     write_csv(out_dir / "paired_summary.csv", paired_summary(all_results))
     print(f"OUT={out_dir}", flush=True)

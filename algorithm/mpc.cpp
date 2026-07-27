@@ -536,6 +536,28 @@ void MPC::cal() {
     c = 2 * Bqp.transpose() * L * (Aqp * X_cur + Cqp - Xd) +
         2 * alpha * K * delta_U;
 
+    const double wrench_rate_weight =
+        std::max(0.0, getEnvDouble("ODC_MPC_WRENCH_RATE_WEIGHT", 0.0));
+    if (wrench_rate_weight > 0.0) {
+      Eigen::Matrix<double, nu * ch, nu * ch> D_rate;
+      Eigen::Matrix<double, nu * ch, 1> d_rate;
+      D_rate.setZero();
+      d_rate.setZero();
+
+      constexpr int wrench_dim = 12;
+      D_rate.block<wrench_dim, wrench_dim>(0, 0).setIdentity();
+      d_rate.block<wrench_dim, 1>(0, 0) =
+          Ufe_pre.block<wrench_dim, 1>(0, 0);
+      for (int i = 1; i < ch; ++i) {
+        D_rate.block<wrench_dim, wrench_dim>(i * nu, i * nu).setIdentity();
+        D_rate.block<wrench_dim, wrench_dim>(i * nu, (i - 1) * nu) =
+            -Eigen::Matrix<double, wrench_dim, wrench_dim>::Identity();
+      }
+
+      H += 2.0 * wrench_rate_weight * D_rate.transpose() * D_rate;
+      c -= 2.0 * wrench_rate_weight * D_rate.transpose() * d_rate;
+    }
+
     // --- 4. 构建QP约束 lbA <= As*U <= ubA 以及 lu <= U <= uu ---
 
     // 4.1 摩擦锥约束 (F_horizontal <= miu * F_vertical)
