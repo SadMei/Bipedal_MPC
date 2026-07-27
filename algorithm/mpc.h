@@ -43,6 +43,10 @@ public:
   void enable();
   void disable();
   bool get_ENA();
+  const Eigen::Matrix3d &getNominalInertia() const;
+  bool hasCalibratedNominalInertia() const;
+  const Eigen::Matrix<double, nx * mpc_N, 1> &
+  getPredictedStateSequence() const;
 
 private:
   void copy_Eigen_to_real_t(qpOASES::real_t *target, Eigen::MatrixXd source,
@@ -66,6 +70,7 @@ private:
   Eigen::Matrix<double, nu, 1> Ufe_pre;
   Eigen::Matrix<double, nx * mpc_N, 1> Xd;
   Eigen::Matrix<double, nx, 1> X_cur;
+  Eigen::Matrix<double, nx * mpc_N, 1> X_pred;
   Eigen::Matrix<double, nx, 1> X_cal;
   Eigen::Matrix<double, nx, 1> X_cal_pre;
   Eigen::Matrix<double, nx, 1> dX_cal;
@@ -98,6 +103,7 @@ private:
   bool use_linear_inertia_prediction{false};
   bool use_linear_tau_dynamics{false};
   bool Ig_dot_filter_initialized{false};
+  bool nominal_Ig_initialized{false};
 
   Eigen::Matrix<double, 3, 3> R_curz[mpc_N];
   Eigen::Matrix<double, 3, 3> R_cur;

@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import math
 import os
+import random
 import shutil
 import subprocess
 import time
@@ -20,6 +21,16 @@ RECORD_DIR = REPO_ROOT / "record"
 FIGURE_DIR = REPO_ROOT / "figures"
 
 MPC_L_DIAG_MAIN = "50 50 80 1 200 1 1 1 10 100 10 1"
+
+LIGHT_NOISE_DEFAULTS = {
+    "noise_base_pos_std": 5.0e-4,
+    "noise_base_rpy_std": math.radians(0.05),
+    "noise_base_vel_std": 3.0e-3,
+    "noise_base_omega_std": 3.0e-3,
+    "noise_joint_pos_std": 2.0e-4,
+    "noise_joint_vel_std": 2.0e-3,
+    "noise_foot_force_std": 1.0,
+}
 
 CONTROLLER_LABELS = {
     "srbm": "SRBM",
@@ -36,6 +47,7 @@ class TrialPaths:
     trace: Path
     datalog: Path | None
     pred: Path | None
+    mpc_horizon: Path | None
 
 
 def token(value: float | str) -> str:
@@ -82,6 +94,38 @@ def parse_controller_list(text: str) -> list[str]:
     if not controllers:
         raise ValueError("at least one controller is required")
     return controllers
+
+
+def paired_uncertainty_profile(rep: int, base_seed: int = 2026072200) -> dict[str, float | int | bool]:
+    """Return a paired baseline/noisy profile shared by every controller."""
+    if rep == 1:
+        return {
+            "noise_enabled": False,
+            "noise_seed": 0,
+            "push_force": 0.0,
+            "push_start": 0.0,
+            "push_duration": 0.0,
+            "push_angle_deg": 0.0,
+            "push_dir_x": 1.0,
+            "push_dir_y": 0.0,
+            **LIGHT_NOISE_DEFAULTS,
+        }
+
+    seed = base_seed + rep
+    rng = random.Random(seed)
+    push_angle_deg = rng.uniform(0.0, 360.0)
+    push_angle_rad = math.radians(push_angle_deg)
+    return {
+        "noise_enabled": True,
+        "noise_seed": seed,
+        "push_force": 20.0,
+        "push_start": rng.uniform(8.0, 14.0),
+        "push_duration": 0.10,
+        "push_angle_deg": push_angle_deg,
+        "push_dir_x": math.cos(push_angle_rad),
+        "push_dir_y": math.sin(push_angle_rad),
+        **LIGHT_NOISE_DEFAULTS,
+    }
 
 
 def mean(values: list[float]) -> float:
@@ -209,6 +253,15 @@ def make_env(
     foot_lookahead_time: float | None = None,
     wbc_delta_fr_weight: float | None = None,
     wbc_delta_ddq_weight: float | None = None,
+    sensor_noise_enable: bool = False,
+    sensor_noise_seed: int = 0,
+    noise_base_pos_std: float = 0.0,
+    noise_base_rpy_std: float = 0.0,
+    noise_base_vel_std: float = 0.0,
+    noise_base_omega_std: float = 0.0,
+    noise_joint_pos_std: float = 0.0,
+    noise_joint_vel_std: float = 0.0,
+    noise_foot_force_std: float = 0.0,
 ) -> tuple[dict[str, str], float]:
     env = os.environ.copy()
     use_lambda = lambda_scale is not None
@@ -236,6 +289,7 @@ def make_env(
             "ODC_WBC_POSROT_ATT_KP_SCALE": f"{posrot_att_scale:.12g}",
             "ODC_WBC_POSROT_ATT_KD_SCALE": f"{posrot_att_scale:.12g}",
             "ODC_LOG_PREDICTION_ERROR": "1",
+            "ODC_PREDICTION_IG_DOT_FILTER_TAU": f"{ig_dot_filter_tau:.12g}",
             "ODC_PRINT_MPC_TIMING": "0",
             "ODC_PRINT_FR_FF": "0",
             "ODC_PRINT_GAIT_SWITCH": "0",
@@ -252,6 +306,15 @@ def make_env(
             "ODC_PUSH_DIR_Z": f"{push_dir_z:.12g}",
             "ODC_PUSH_TRIGGER_MODE": push_trigger_mode,
             "ODC_PUSH_TRIGGER_PHI": f"{push_trigger_phi:.12g}",
+            "ODC_SENSOR_NOISE_ENABLE": "1" if sensor_noise_enable else "0",
+            "ODC_SENSOR_NOISE_SEED": str(sensor_noise_seed),
+            "ODC_NOISE_BASE_POS_STD": f"{noise_base_pos_std:.12g}",
+            "ODC_NOISE_BASE_RPY_STD": f"{noise_base_rpy_std:.12g}",
+            "ODC_NOISE_BASE_VEL_STD": f"{noise_base_vel_std:.12g}",
+            "ODC_NOISE_BASE_OMEGA_STD": f"{noise_base_omega_std:.12g}",
+            "ODC_NOISE_JOINT_POS_STD": f"{noise_joint_pos_std:.12g}",
+            "ODC_NOISE_JOINT_VEL_STD": f"{noise_joint_vel_std:.12g}",
+            "ODC_NOISE_FOOT_FORCE_STD": f"{noise_foot_force_std:.12g}",
         }
     )
     if use_lambda:
@@ -297,8 +360,10 @@ def run_trial(
     datalog_dst: Path | None = None
     datalog_src = RECORD_DIR / f"exp{exp_id}_datalog.log"
     if datalog_src.exists():
-        datalog_dst = out_dir / f"{case}_datalog.log"
-        shutil.copyfile(datalog_src, datalog_dst)
+        # The high-rate datalog duplicates the retained compact trace and can
+        # exceed 100 MB per trial. Release the scratch file between runs.
+        with datalog_src.open("w"):
+            pass
 
     pred_dst: Path | None = None
     pred_src = RECORD_DIR / f"pred_error_exp{exp_id}_{case}_lf{pred_leg_fraction:.6f}.csv"
@@ -306,7 +371,22 @@ def run_trial(
         pred_dst = out_dir / f"{case}_pred_error.csv"
         shutil.copyfile(pred_src, pred_dst)
 
-    return TrialPaths(log=log_path, trace=trace_dst, datalog=datalog_dst, pred=pred_dst)
+    mpc_horizon_dst: Path | None = None
+    mpc_horizon_src = (
+        RECORD_DIR
+        / f"mpc_horizon_exp{exp_id}_{case}_lf{pred_leg_fraction:.6f}.csv"
+    )
+    if mpc_horizon_src.exists():
+        mpc_horizon_dst = out_dir / f"{case}_mpc_horizon.csv"
+        shutil.copyfile(mpc_horizon_src, mpc_horizon_dst)
+
+    return TrialPaths(
+        log=log_path,
+        trace=trace_dst,
+        datalog=datalog_dst,
+        pred=pred_dst,
+        mpc_horizon=mpc_horizon_dst,
+    )
 
 
 def fit_sinusoid(time_values: list[float], values: list[float], period: float) -> dict[str, float]:
@@ -372,6 +452,13 @@ def compute_trace_metrics(
     if not fall:
         fall_time = final_time
 
+    mpc_qp_fail_frames = sum(
+        1 for row in rows if int(parse_float(row, "mpc_qp_status", 0.0)) != 0
+    )
+    wbc_qp_fail_frames = sum(
+        1 for row in rows if int(parse_float(row, "wbc_qp_status", 0.0)) != 0
+    )
+
     times = [parse_float(r, "time") for r in rows]
     x_ref: list[float] = []
     y_ref: list[float] = []
@@ -423,12 +510,18 @@ def compute_trace_metrics(
     wz_err_fit = fit_sinusoid(ev_t, wz_err, sine_period)
 
     srbm_pred_err: list[float] = []
-    vicm_pred_err: list[float] = []
+    vi_pred_err: list[float] = []
+    ir_pred_err: list[float] = []
+    ir_nf_pred_err: list[float] = []
     if pred_path is not None and pred_path.exists():
         for row in read_rows(pred_path):
             if parse_float(row, "time") >= eval_start and parse_float(row, "time") <= eval_end:
                 srbm_pred_err.append(parse_float(row, "srbm_err_norm"))
-                vicm_pred_err.append(parse_float(row, "vicm_err_norm"))
+                vi_pred_err.append(parse_float(row, "vi_err_norm"))
+                ir_pred_err.append(
+                    parse_float(row, "ir_err_norm", parse_float(row, "vicm_err_norm"))
+                )
+                ir_nf_pred_err.append(parse_float(row, "ir_nf_err_norm"))
 
     eval_duration = max(0.0, eval_end - eval_start)
     task_valid = (
@@ -446,6 +539,8 @@ def compute_trace_metrics(
         "fall_time": fall_time,
         "final_time": final_time,
         "steps": int(parse_float(rows[-1], "step_count", 0.0)),
+        "mpc_qp_fail_frames": mpc_qp_fail_frames,
+        "wbc_qp_fail_frames": wbc_qp_fail_frames,
         "eval_start": eval_start,
         "eval_end": eval_end,
         "eval_duration": eval_duration,
@@ -467,7 +562,11 @@ def compute_trace_metrics(
         "yaw_phase_lag_s": phase_lag_seconds(yaw_fit["phase"], yaw_ref_fit["phase"], sine_period),
         "wz_high_freq_residual_rms": wz_err_fit["fit_rms"],
         "rms_srbm_pred_err": rms(srbm_pred_err),
-        "rms_vicm_pred_err": rms(vicm_pred_err),
+        "rms_vi_pred_err": rms(vi_pred_err),
+        "rms_ir_pred_err": rms(ir_pred_err),
+        "rms_ir_nf_pred_err": rms(ir_nf_pred_err),
+        # Retained for readers of older result directories.
+        "rms_vicm_pred_err": rms(ir_pred_err),
     }
 
 

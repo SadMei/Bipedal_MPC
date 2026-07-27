@@ -25,11 +25,13 @@ Feel free to use in any purpose, and cite OpenLoong-Dynamics-Control in any styl
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -77,70 +79,132 @@ struct OneStepPredictionFrame {
   double phi{0.0};
   DataBus::LegState leg_state{DataBus::DSt};
   Eigen::Vector3d rpy{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d p_com{Eigen::Vector3d::Zero()};
   Eigen::Vector3d omega{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d foot_l{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d foot_r{Eigen::Vector3d::Zero()};
+  Eigen::Matrix3d nominal_inertia{Eigen::Matrix3d::Identity()};
   Eigen::Matrix3d inertia{Eigen::Matrix3d::Identity()};
-  Eigen::Matrix3d inertia_dot{Eigen::Matrix3d::Zero()};
-  Eigen::Matrix<double, 12, 1> wrench{Eigen::Matrix<double, 12, 1>::Zero()};
+  Eigen::Matrix3d inertia_dot_raw{Eigen::Matrix3d::Zero()};
+  Eigen::Matrix3d inertia_dot_filtered{Eigen::Matrix3d::Zero()};
+  Eigen::Vector3d external_force_impulse{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d external_moment_impulse{Eigen::Vector3d::Zero()};
+  double integrated_dt{0.0};
+  int contact_count_sum{0};
+  int physics_samples{0};
+};
+
+struct PendingMpcPrediction {
+  double origin_time{0.0};
+  double target_time{0.0};
+  int horizon_steps{0};
+  double origin_phi{0.0};
+  DataBus::LegState origin_leg_state{DataBus::DSt};
+  double origin_wz_ref{0.0};
+  Eigen::Vector3d start_omega{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d predicted_omega{Eigen::Vector3d::Zero()};
+};
+
+struct CompletedMpcPrediction {
+  PendingMpcPrediction prediction;
+  double actual_time{0.0};
+  Eigen::Vector3d actual_omega{Eigen::Vector3d::Zero()};
 };
 
 OneStepPredictionFrame makePredictionFrame(const DataBus &state,
-                                           double sim_time) {
+                                           double sim_time,
+                                           const Eigen::Matrix3d &nominal_inertia,
+                                           const Eigen::Matrix3d &filtered_inertia_dot,
+                                           const Eigen::Vector3d &true_omega_W) {
   OneStepPredictionFrame frame;
   frame.valid = true;
   frame.time = sim_time;
   frame.phi = state.phi;
   frame.leg_state = state.legState;
   frame.rpy = state.base_rpy;
-  frame.p_com = state.q.block<3, 1>(0, 0);
-  frame.omega = state.dq.block<3, 1>(3, 0);
-  frame.foot_l = state.fe_l_pos_W;
-  frame.foot_r = state.fe_r_pos_W;
+  frame.omega = true_omega_W;
+  frame.nominal_inertia = nominal_inertia;
   frame.inertia = state.inertia;
-  frame.inertia_dot = state.inertia_dot;
-  frame.wrench = state.Fr_ff;
+  frame.inertia_dot_raw = state.inertia_dot;
+  frame.inertia_dot_filtered = filtered_inertia_dot;
   return frame;
 }
 
+enum class OmegaPredictionModel { SRBM, VariableInertia, InertiaRate, InertiaRateRaw };
+
 Eigen::Vector3d predictOmegaOneStep(const OneStepPredictionFrame &frame,
-                                    double horizon_dt, bool use_vicm,
-                                    double tau_scale, bool use_phase_gate,
-                                    double phase_min, double phase_max) {
-  static const Eigen::Matrix3d nominal_Ig =
-      (Eigen::Matrix3d() << 12.61, 0.0, 0.01, 0.0, 11.15, 0.01, 0.01, 0.01,
-       2.15)
-          .finished();
-
-  const Eigen::Vector3d f_l = frame.wrench.block<3, 1>(0, 0);
-  const Eigen::Vector3d tau_l = frame.wrench.block<3, 1>(3, 0);
-  const Eigen::Vector3d f_r = frame.wrench.block<3, 1>(6, 0);
-  const Eigen::Vector3d tau_r = frame.wrench.block<3, 1>(9, 0);
-  const Eigen::Vector3d moment =
-      (frame.foot_l - frame.p_com).cross(f_l) + tau_l +
-      (frame.foot_r - frame.p_com).cross(f_r) + tau_r;
-
-  Eigen::Matrix3d inertia_inv;
-  if (use_vicm) {
-    inertia_inv = frame.inertia.inverse();
-  } else {
+                                    OmegaPredictionModel model) {
+  Eigen::Matrix3d inertia = frame.inertia;
+  if (model == OmegaPredictionModel::SRBM) {
     const Eigen::Matrix3d r_yaw = Rz3(frame.rpy(2));
-    inertia_inv = (r_yaw * nominal_Ig * r_yaw.transpose()).inverse();
+    inertia = r_yaw * frame.nominal_inertia * r_yaw.transpose();
   }
 
-  Eigen::Vector3d omega_dot = inertia_inv * moment;
-  if (use_vicm) {
-    const bool single_support =
-        frame.leg_state == DataBus::LSt || frame.leg_state == DataBus::RSt;
-    const bool phase_allowed =
-        !use_phase_gate ||
-        (single_support && frame.phi >= phase_min && frame.phi <= phase_max);
-    if (phase_allowed) {
-      omega_dot -= inertia_inv * (tau_scale * frame.inertia_dot * frame.omega);
-    }
+  Eigen::Vector3d angular_impulse = frame.external_moment_impulse;
+  if (model == OmegaPredictionModel::InertiaRate) {
+    angular_impulse -=
+        frame.inertia_dot_filtered * frame.omega * frame.integrated_dt;
+  } else if (model == OmegaPredictionModel::InertiaRateRaw) {
+    angular_impulse -=
+        frame.inertia_dot_raw * frame.omega * frame.integrated_dt;
   }
-  return frame.omega + horizon_dt * omega_dot;
+  return frame.omega + inertia.inverse() * angular_impulse;
+}
+
+struct ExternalWrenchSample {
+  Eigen::Vector3d force{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d moment{Eigen::Vector3d::Zero()};
+  int contact_count{0};
+};
+
+ExternalWrenchSample computeActualExternalWrench(
+    const mjModel *model, const mjData *data, const Eigen::Vector3d &com_W,
+    int base_body_id, const Eigen::Vector3d &applied_push_force_W) {
+  ExternalWrenchSample sample;
+  for (int contact_id = 0; contact_id < data->ncon; ++contact_id) {
+    const mjContact &contact = data->contact[contact_id];
+    if (contact.geom[0] < 0 || contact.geom[1] < 0) {
+      continue;
+    }
+    const int body0 = model->geom_bodyid[contact.geom[0]];
+    const int body1 = model->geom_bodyid[contact.geom[1]];
+    const bool body0_is_world = body0 == 0;
+    const bool body1_is_world = body1 == 0;
+    if (body0_is_world == body1_is_world) {
+      continue;
+    }
+
+    mjtNum local_wrench[6] = {0, 0, 0, 0, 0, 0};
+    mj_contactForce(model, data, contact_id, local_wrench);
+    Eigen::Matrix3d contact_frame;
+    for (int row = 0; row < 3; ++row) {
+      for (int col = 0; col < 3; ++col) {
+        contact_frame(row, col) = contact.frame[3 * row + col];
+      }
+    }
+    const Eigen::Vector3d force_local(local_wrench[0], local_wrench[1],
+                                      local_wrench[2]);
+    const Eigen::Vector3d moment_local(local_wrench[3], local_wrench[4],
+                                       local_wrench[5]);
+    // mj_contactForce returns the wrench acting on geom[1].
+    const double robot_wrench_sign = body1_is_world ? -1.0 : 1.0;
+    const Eigen::Vector3d force_W =
+        robot_wrench_sign * contact_frame.transpose() * force_local;
+    const Eigen::Vector3d moment_W =
+        robot_wrench_sign * contact_frame.transpose() * moment_local;
+    const Eigen::Vector3d contact_pos_W(contact.pos[0], contact.pos[1],
+                                        contact.pos[2]);
+    sample.force += force_W;
+    sample.moment += (contact_pos_W - com_W).cross(force_W) + moment_W;
+    ++sample.contact_count;
+  }
+
+  if (applied_push_force_W.squaredNorm() > 0.0 && base_body_id >= 0) {
+    const Eigen::Vector3d application_point_W(
+        data->xipos[3 * base_body_id], data->xipos[3 * base_body_id + 1],
+        data->xipos[3 * base_body_id + 2]);
+    sample.force += applied_push_force_W;
+    sample.moment +=
+        (application_point_W - com_W).cross(applied_push_force_W);
+  }
+  return sample;
 }
 
 bool getEnvBool(const char *name, bool default_value) {
@@ -478,6 +542,24 @@ int main(int argc, char **argv) {
   const double mpc_timing_print_interval =
       getEnvDouble("ODC_MPC_TIMING_PRINT_INTERVAL", 1.0);
   const bool print_gait_switch = getEnvBool("ODC_PRINT_GAIT_SWITCH", false);
+  const bool sensor_noise_enabled =
+      getEnvBool("ODC_SENSOR_NOISE_ENABLE", false);
+  const uint32_t sensor_noise_seed = static_cast<uint32_t>(
+      std::max(0, getEnvInt("ODC_SENSOR_NOISE_SEED", 1)));
+  const double noise_base_pos_std =
+      std::max(0.0, getEnvDouble("ODC_NOISE_BASE_POS_STD", 0.0));
+  const double noise_base_rpy_std =
+      std::max(0.0, getEnvDouble("ODC_NOISE_BASE_RPY_STD", 0.0));
+  const double noise_base_vel_std =
+      std::max(0.0, getEnvDouble("ODC_NOISE_BASE_VEL_STD", 0.0));
+  const double noise_base_omega_std =
+      std::max(0.0, getEnvDouble("ODC_NOISE_BASE_OMEGA_STD", 0.0));
+  const double noise_joint_pos_std =
+      std::max(0.0, getEnvDouble("ODC_NOISE_JOINT_POS_STD", 0.0));
+  const double noise_joint_vel_std =
+      std::max(0.0, getEnvDouble("ODC_NOISE_JOINT_VEL_STD", 0.0));
+  const double noise_foot_force_std =
+      std::max(0.0, getEnvDouble("ODC_NOISE_FOOT_FORCE_STD", 0.0));
   const bool headless = getEnvBool("ODC_HEADLESS", false);
   const bool snapshot_enabled = getEnvBool("ODC_SNAPSHOT_ENABLE", false);
   const std::string snapshot_dir =
@@ -524,6 +606,8 @@ int main(int argc, char **argv) {
       getEnvDouble("ODC_SINE_WZ_START_TIME", sine_start_time);
   const bool log_prediction_error =
       getEnvBool("ODC_LOG_PREDICTION_ERROR", false);
+  const double prediction_ig_dot_filter_tau = std::max(
+      0.0, getEnvDouble("ODC_PREDICTION_IG_DOT_FILTER_TAU", 0.01));
   const double gait_swing_time = getEnvDouble("ODC_TSWING", 0.45);
   const double gait_switch_force_threshold =
       getEnvDouble("ODC_GAIT_SWITCH_FORCE_THRESHOLD", 100.0);
@@ -570,6 +654,10 @@ int main(int argc, char **argv) {
   const std::string pred_error_path =
       "../record/pred_error_exp" + std::to_string(static_cast<int>(exp)) + "_" +
       controller_label + "_lf" + std::to_string(leg_mass_fraction) + ".csv";
+  const std::string mpc_horizon_path =
+      "../record/mpc_horizon_exp" +
+      std::to_string(static_cast<int>(exp)) + "_" + controller_label + "_lf" +
+      std::to_string(leg_mass_fraction) + ".csv";
 
   if (use_leg_lambda_scale) {
     applyMuJoCoLegInertiaScale(mj_model, mj_data, leg_lambda_scale);
@@ -582,8 +670,10 @@ int main(int argc, char **argv) {
   std::ofstream trace_file(exp_tag + "_trace.csv", std::ios::out);
   std::ofstream fr_ff_file(fr_ff_path, std::ios::out);
   std::ofstream pred_error_file;
+  std::ofstream mpc_horizon_file;
   if (log_prediction_error) {
     pred_error_file.open(pred_error_path, std::ios::out);
+    mpc_horizon_file.open(mpc_horizon_path, std::ios::out);
   }
   std::ofstream summary_file(summary_path, std::ios::app);
 
@@ -611,12 +701,28 @@ int main(int argc, char **argv) {
   if (log_prediction_error) {
     pred_error_file
         << "time,dt,controller_label,exp_id,leg_mass_fraction,"
+           "start_roll,start_pitch,start_yaw,start_wx,start_wy,start_wz,"
+           "nominal_i00,nominal_i01,nominal_i02,nominal_i10,nominal_i11,nominal_i12,nominal_i20,nominal_i21,nominal_i22,"
+           "inertia_i00,inertia_i01,inertia_i02,inertia_i10,inertia_i11,inertia_i12,inertia_i20,inertia_i21,inertia_i22,"
+           "idot_filtered_i00,idot_filtered_i01,idot_filtered_i02,idot_filtered_i10,idot_filtered_i11,idot_filtered_i12,idot_filtered_i20,idot_filtered_i21,idot_filtered_i22,"
+           "idot_raw_i00,idot_raw_i01,idot_raw_i02,idot_raw_i10,idot_raw_i11,idot_raw_i12,idot_raw_i20,idot_raw_i21,idot_raw_i22,"
            "wz_ref,actual_wx,actual_wy,actual_wz,"
            "srbm_pred_wx,srbm_pred_wy,srbm_pred_wz,"
-           "vicm_pred_wx,vicm_pred_wy,vicm_pred_wz,"
+           "vi_pred_wx,vi_pred_wy,vi_pred_wz,"
+           "ir_pred_wx,ir_pred_wy,ir_pred_wz,"
+           "ir_nf_pred_wx,ir_nf_pred_wy,ir_nf_pred_wz,"
            "srbm_err_wx,srbm_err_wy,srbm_err_wz,srbm_err_norm,"
-           "vicm_err_wx,vicm_err_wy,vicm_err_wz,vicm_err_norm,"
-           "phi,leg_state,tau_scale,tau_phase_gate\n";
+           "vi_err_wx,vi_err_wy,vi_err_wz,vi_err_norm,"
+           "ir_err_wx,ir_err_wy,ir_err_wz,ir_err_norm,"
+           "ir_nf_err_wx,ir_nf_err_wy,ir_nf_err_wz,ir_nf_err_norm,"
+           "moment_impulse_x,moment_impulse_y,moment_impulse_z,"
+           "mean_force_z,mean_contact_count,phi,leg_state\n";
+    mpc_horizon_file
+        << "origin_time,target_time,actual_time,horizon_steps,controller_label,"
+           "exp_id,leg_mass_fraction,origin_phi,origin_leg_state,origin_wz_ref,"
+           "start_wx,start_wy,start_wz,pred_wx,pred_wy,pred_wz,"
+           "actual_wx,actual_wy,actual_wz,err_wx,err_wy,err_wz,err_norm,"
+           "delta_wx,delta_wy,delta_wz,delta_norm\n";
   }
 
   UIctr uiController(mj_model, mj_data);
@@ -673,6 +779,8 @@ int main(int argc, char **argv) {
   }
   if (log_prediction_error) {
     std::cout << "[PredictionError] logging to " << pred_error_path
+              << std::endl;
+    std::cout << "[MpcHorizonPrediction] logging to " << mpc_horizon_path
               << std::endl;
   }
   if (snapshot_enabled) {
@@ -829,6 +937,13 @@ int main(int argc, char **argv) {
   double mpcTimingQpMsSum = 0.0;
   double mpcTimingQpMsMax = 0.0;
   OneStepPredictionFrame predictionFrame;
+  Eigen::Matrix3d predictionIgDotFiltered = Eigen::Matrix3d::Zero();
+  bool predictionIgDotFilterInitialized = false;
+  std::deque<PendingMpcPrediction> pendingMpcPredictions;
+  std::vector<CompletedMpcPrediction> completedMpcPredictions;
+  completedMpcPredictions.reserve(
+      static_cast<size_t>(simEndTime / dt_200Hz) * mpc_N);
+  Eigen::Vector3d trueOmegaW = Eigen::Vector3d::Zero();
   int snapshot_index = 0;
   double next_snapshot_time =
       snapshot_times.empty() ? snapshot_start_time : snapshot_times.front();
@@ -836,26 +951,45 @@ int main(int argc, char **argv) {
   double pushActualStartTime = push_start_time;
   double lastPushPhi = std::numeric_limits<double>::quiet_NaN();
   DataBus::LegState lastPushLegState = DataBus::DSt;
+  std::mt19937 sensorNoiseRng(sensor_noise_seed);
+  std::normal_distribution<double> standardNormal(0.0, 1.0);
+  const auto sampleNoise = [&](double stddev) {
+    return sensor_noise_enabled && stddev > 0.0
+               ? stddev * standardNormal(sensorNoiseRng)
+               : 0.0;
+  };
+
+  std::cout << std::fixed << std::setprecision(8)
+            << "[Experiment uncertainty] sensor_noise="
+            << (sensor_noise_enabled ? 1 : 0)
+            << " seed=" << sensor_noise_seed
+            << " base_pos_std=" << noise_base_pos_std
+            << " base_rpy_std=" << noise_base_rpy_std
+            << " base_vel_std=" << noise_base_vel_std
+            << " base_omega_std=" << noise_base_omega_std
+            << " joint_pos_std=" << noise_joint_pos_std
+            << " joint_vel_std=" << noise_joint_vel_std
+            << " foot_force_std=" << noise_foot_force_std << std::endl;
 
   mjtNum simstart = mj_data->time;
   double simTime = mj_data->time;
   while (headless || !glfwWindowShouldClose(uiController.window)) {
     simstart = mj_data->time;
     while (mj_data->time - simstart < 1.0 / 60.0 && uiController.runSim) {
-      const bool pushEnabled =
-          (exp == 1 || exp == 4) && push_force > 0.0 && push_duration > 0.0;
+      const bool pushEnabled = push_force > 0.0 && push_duration > 0.0;
       const bool pushReady =
           !push_phase_trigger_enabled || pushPhaseTriggered;
       const bool pushActive =
           pushEnabled && pushReady && mj_data->time >= pushActualStartTime &&
           mj_data->time < (pushActualStartTime + push_duration);
+      Eigen::Vector3d appliedPushForceW = Eigen::Vector3d::Zero();
       for (int i = 0; i < 6; ++i) {
         mj_data->xfrc_applied[6 * baseBodyId + i] = 0.0;
       }
       if (pushActive) {
-        const Eigen::Vector3d push_force_W = push_force * push_dir_W.normalized();
+        appliedPushForceW = push_force * push_dir_W.normalized();
         for (int axis = 0; axis < 3; ++axis) {
-          mj_data->xfrc_applied[6 * baseBodyId + axis] = push_force_W(axis);
+          mj_data->xfrc_applied[6 * baseBodyId + axis] = appliedPushForceW(axis);
         }
       }
 
@@ -864,6 +998,30 @@ int main(int argc, char **argv) {
 
       mj_interface.updateSensorValues();
       mj_interface.dataBusWrite(RobotState);
+      trueOmegaW = RobotState.dq.block<3, 1>(3, 0);
+      // Use the exact scaled initial configuration to define the fixed SRBM
+      // inertia for every paired trial; inject measurement noise afterwards.
+      if (sensor_noise_enabled && MPC_solv.hasCalibratedNominalInertia()) {
+        for (int axis = 0; axis < 3; ++axis) {
+          RobotState.basePos[axis] += sampleNoise(noise_base_pos_std);
+          RobotState.rpy[axis] += sampleNoise(noise_base_rpy_std);
+          RobotState.baseLinVel[axis] += sampleNoise(noise_base_vel_std);
+          RobotState.baseAngVel[axis] += sampleNoise(noise_base_omega_std);
+        }
+        for (double &position : RobotState.motors_pos_cur) {
+          position += sampleNoise(noise_joint_pos_std);
+        }
+        for (double &velocity : RobotState.motors_vel_cur) {
+          velocity += sampleNoise(noise_joint_vel_std);
+        }
+        RobotState.fL[2] =
+            std::max(0.0, RobotState.fL[2] + sampleNoise(noise_foot_force_std));
+        RobotState.fR[2] =
+            std::max(0.0, RobotState.fR[2] + sampleNoise(noise_foot_force_std));
+        RobotState.foot_contact_fz_l = RobotState.fL[2];
+        RobotState.foot_contact_fz_r = RobotState.fR[2];
+        RobotState.updateQ();
+      }
 
       double command_speed_x = target_speed_x;
       double command_speed_y = target_speed_y;
@@ -910,6 +1068,21 @@ int main(int argc, char **argv) {
       kinDynSolver.computeJ_dJ();
       kinDynSolver.computeDyn();
       kinDynSolver.dataBusWrite(RobotState);
+
+      if (log_prediction_error && predictionFrame.valid && baseBodyId >= 0) {
+        const Eigen::Vector3d trueComW(
+            mj_data->subtree_com[3 * baseBodyId],
+            mj_data->subtree_com[3 * baseBodyId + 1],
+            mj_data->subtree_com[3 * baseBodyId + 2]);
+        const ExternalWrenchSample wrenchSample = computeActualExternalWrench(
+            mj_model, mj_data, trueComW, baseBodyId, appliedPushForceW);
+        const double physicsDt = mj_model->opt.timestep;
+        predictionFrame.external_force_impulse += wrenchSample.force * physicsDt;
+        predictionFrame.external_moment_impulse += wrenchSample.moment * physicsDt;
+        predictionFrame.integrated_dt += physicsDt;
+        predictionFrame.contact_count_sum += wrenchSample.contact_count;
+        ++predictionFrame.physics_samples;
+      }
 
       if (print_variable_inertia && use_variable_inertia_model &&
           simTime >= nextIgPrintTime) {
@@ -1037,40 +1210,89 @@ int main(int argc, char **argv) {
 
       MPC_count = MPC_count + 1;
       if (MPC_count > (dt_200Hz / dt - 1)) {
+        if (log_prediction_error && !pendingMpcPredictions.empty()) {
+          for (auto it = pendingMpcPredictions.begin();
+               it != pendingMpcPredictions.end();) {
+            if (it->target_time > simTime + 0.5 * dt_200Hz) {
+              ++it;
+              continue;
+            }
+            completedMpcPredictions.push_back(
+                {*it, simTime, trueOmegaW});
+            it = pendingMpcPredictions.erase(it);
+          }
+        }
+
         if (log_prediction_error && predictionFrame.valid) {
           const double prediction_dt = simTime - predictionFrame.time;
           if (prediction_dt > 0.0 && prediction_dt < 0.05) {
-            const Eigen::Vector3d actual_omega =
-                RobotState.dq.block<3, 1>(3, 0);
+            const Eigen::Vector3d actual_omega = trueOmegaW;
             const Eigen::Vector3d srbm_pred =
-                predictOmegaOneStep(predictionFrame, prediction_dt, false,
-                                    tau_bias_scale, false, tau_phase_gate_min,
-                                    tau_phase_gate_max);
-            const Eigen::Vector3d vicm_pred =
-                predictOmegaOneStep(predictionFrame, prediction_dt, true,
-                                    tau_bias_scale, use_tau_phase_gate,
-                                    tau_phase_gate_min, tau_phase_gate_max);
+                predictOmegaOneStep(predictionFrame,
+                                    OmegaPredictionModel::SRBM);
+            const Eigen::Vector3d vi_pred = predictOmegaOneStep(
+                predictionFrame, OmegaPredictionModel::VariableInertia);
+            const Eigen::Vector3d ir_pred = predictOmegaOneStep(
+                predictionFrame, OmegaPredictionModel::InertiaRate);
+            const Eigen::Vector3d ir_nf_pred = predictOmegaOneStep(
+                predictionFrame, OmegaPredictionModel::InertiaRateRaw);
             const Eigen::Vector3d srbm_err = actual_omega - srbm_pred;
-            const Eigen::Vector3d vicm_err = actual_omega - vicm_pred;
+            const Eigen::Vector3d vi_err = actual_omega - vi_pred;
+            const Eigen::Vector3d ir_err = actual_omega - ir_pred;
+            const Eigen::Vector3d ir_nf_err = actual_omega - ir_nf_pred;
+            const double meanForceZ = predictionFrame.integrated_dt > 0.0
+                                          ? predictionFrame.external_force_impulse(2) /
+                                                predictionFrame.integrated_dt
+                                          : 0.0;
+            const double meanContactCount = predictionFrame.physics_samples > 0
+                                                ? static_cast<double>(predictionFrame.contact_count_sum) /
+                                                      predictionFrame.physics_samples
+                                                : 0.0;
             pred_error_file
                 << std::fixed << std::setprecision(6) << simTime << ","
                 << prediction_dt << "," << controller_label << ","
                 << static_cast<int>(exp) << "," << leg_mass_fraction << ","
-                << RobotState.js_omega_des(2) << ","
+                << predictionFrame.rpy(0) << "," << predictionFrame.rpy(1)
+                << "," << predictionFrame.rpy(2) << ","
+                << predictionFrame.omega(0) << ","
+                << predictionFrame.omega(1) << ","
+                << predictionFrame.omega(2);
+            const auto write_matrix = [&pred_error_file](
+                                          const Eigen::Matrix3d &matrix) {
+              for (int row = 0; row < 3; ++row) {
+                for (int col = 0; col < 3; ++col) {
+                  pred_error_file << "," << matrix(row, col);
+                }
+              }
+            };
+            write_matrix(predictionFrame.nominal_inertia);
+            write_matrix(predictionFrame.inertia);
+            write_matrix(predictionFrame.inertia_dot_filtered);
+            write_matrix(predictionFrame.inertia_dot_raw);
+            pred_error_file
+                << "," << RobotState.js_omega_des(2) << ","
                 << actual_omega(0) << "," << actual_omega(1) << ","
                 << actual_omega(2) << ","
                 << srbm_pred(0) << "," << srbm_pred(1) << ","
                 << srbm_pred(2) << ","
-                << vicm_pred(0) << "," << vicm_pred(1) << ","
-                << vicm_pred(2) << ","
+                << vi_pred(0) << "," << vi_pred(1) << "," << vi_pred(2) << ","
+                << ir_pred(0) << "," << ir_pred(1) << "," << ir_pred(2) << ","
+                << ir_nf_pred(0) << "," << ir_nf_pred(1) << ","
+                << ir_nf_pred(2) << ","
                 << srbm_err(0) << "," << srbm_err(1) << ","
                 << srbm_err(2) << "," << srbm_err.norm() << ","
-                << vicm_err(0) << "," << vicm_err(1) << ","
-                << vicm_err(2) << "," << vicm_err.norm() << ","
+                << vi_err(0) << "," << vi_err(1) << "," << vi_err(2) << ","
+                << vi_err.norm() << ","
+                << ir_err(0) << "," << ir_err(1) << "," << ir_err(2) << ","
+                << ir_err.norm() << ","
+                << ir_nf_err(0) << "," << ir_nf_err(1) << ","
+                << ir_nf_err(2) << "," << ir_nf_err.norm() << ","
+                << predictionFrame.external_moment_impulse(0) << ","
+                << predictionFrame.external_moment_impulse(1) << ","
+                << predictionFrame.external_moment_impulse(2) << ","
+                << meanForceZ << "," << meanContactCount << ","
                 << predictionFrame.phi << ","
-                << static_cast<int>(predictionFrame.leg_state) << ","
-                << tau_bias_scale << "," << (use_tau_phase_gate ? 1 : 0)
-                << "\n";
+                << static_cast<int>(predictionFrame.leg_state) << "\n";
           }
         }
 
@@ -1079,7 +1301,42 @@ int main(int argc, char **argv) {
         MPC_solv.cal();
         MPC_solv.dataBusWrite(RobotState);
         if (log_prediction_error && MPC_solv.get_ENA()) {
-          predictionFrame = makePredictionFrame(RobotState, simTime);
+          const auto &predictedStates =
+              MPC_solv.getPredictedStateSequence();
+          for (int horizon = 1; horizon <= mpc_N; ++horizon) {
+            PendingMpcPrediction pending;
+            pending.origin_time = simTime;
+            pending.target_time = simTime + horizon * dt_200Hz;
+            pending.horizon_steps = horizon;
+            pending.origin_phi = RobotState.phi;
+            pending.origin_leg_state = RobotState.legState;
+            pending.origin_wz_ref = RobotState.js_omega_des(2);
+            pending.start_omega = trueOmegaW;
+            pending.predicted_omega =
+                predictedStates.block<3, 1>((horizon - 1) * nx + 6, 0);
+            pendingMpcPredictions.push_back(pending);
+          }
+
+          const Eigen::Matrix3d rawIgDot = RobotState.inertia_dot;
+          if (prediction_ig_dot_filter_tau > 0.0 && rawIgDot.allFinite()) {
+            const double alpha = dt_200Hz /
+                                 (prediction_ig_dot_filter_tau + dt_200Hz);
+            if (!predictionIgDotFilterInitialized) {
+              predictionIgDotFiltered = rawIgDot;
+              predictionIgDotFilterInitialized = true;
+            } else {
+              predictionIgDotFiltered +=
+                  alpha * (rawIgDot - predictionIgDotFiltered);
+            }
+          } else {
+            predictionIgDotFiltered = rawIgDot;
+            predictionIgDotFilterInitialized = false;
+          }
+          predictionIgDotFiltered =
+              0.5 * (predictionIgDotFiltered + predictionIgDotFiltered.transpose());
+          predictionFrame = makePredictionFrame(
+              RobotState, simTime, MPC_solv.getNominalInertia(),
+              predictionIgDotFiltered, trueOmegaW);
         }
         const auto mpcWallEnd = std::chrono::steady_clock::now();
         const double mpcWallMs =
@@ -1381,6 +1638,35 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (mpc_horizon_file.is_open()) {
+    for (const auto &completed : completedMpcPredictions) {
+      const PendingMpcPrediction &prediction = completed.prediction;
+      const Eigen::Vector3d error =
+          completed.actual_omega - prediction.predicted_omega;
+      const Eigen::Vector3d actualDelta =
+          completed.actual_omega - prediction.start_omega;
+      mpc_horizon_file
+          << std::fixed << std::setprecision(9) << prediction.origin_time
+          << "," << prediction.target_time << "," << completed.actual_time
+          << "," << prediction.horizon_steps << "," << controller_label
+          << "," << static_cast<int>(exp) << "," << leg_mass_fraction << ","
+          << prediction.origin_phi << ","
+          << static_cast<int>(prediction.origin_leg_state) << ","
+          << prediction.origin_wz_ref << "," << prediction.start_omega(0)
+          << "," << prediction.start_omega(1) << ","
+          << prediction.start_omega(2) << ","
+          << prediction.predicted_omega(0) << ","
+          << prediction.predicted_omega(1) << ","
+          << prediction.predicted_omega(2) << ","
+          << completed.actual_omega(0) << ","
+          << completed.actual_omega(1) << ","
+          << completed.actual_omega(2) << "," << error(0) << ","
+          << error(1) << "," << error(2) << "," << error.norm() << ","
+          << actualDelta(0) << "," << actualDelta(1) << ","
+          << actualDelta(2) << "," << actualDelta.norm() << "\n";
+    }
+  }
+
   summary_file << static_cast<int>(exp) << "," << exp_name << ","
                << (use_variable_inertia_model ? 1 : 0) << ","
                << (use_tau_bias_feedforward ? 1 : 0) << ","
@@ -1402,6 +1688,9 @@ int main(int argc, char **argv) {
   fr_ff_file.close();
   if (pred_error_file.is_open()) {
     pred_error_file.close();
+  }
+  if (mpc_horizon_file.is_open()) {
+    mpc_horizon_file.close();
   }
   summary_file.close();
   return 0;

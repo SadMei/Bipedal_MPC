@@ -405,7 +405,8 @@ void WBC_priority::computeTau()
 	nWSR = 200;
 	cpu_time = timeStep;
 //    QP_prob.reset();
-	res = QP_prob.init(qp_H, qp_g, qp_A, NULL, NULL, qp_lbA, qp_ubA, nWSR, &cpu_time, xOpt_iniGuess);
+	res = QP_prob.init(qp_H, qp_g, qp_A, NULL, NULL, qp_lbA, qp_ubA,
+	                   nWSR, &cpu_time, xOpt_iniGuess);
 	qpStatus = qpOASES::getSimpleStatus(res);
 //    if (res==qpOASES::SUCCESSFUL_RETURN)
 //        printf("WBC-QP: successful_return\n");
@@ -423,10 +424,8 @@ void WBC_priority::computeTau()
 	}
 	else
 	{
-		constexpr double kQpFallbackDecay = 0.90;
-		if (eigen_xOpt.allFinite())
-			eigen_xOpt *= kQpFallbackDecay;
-		else
+		// Hold the previous QP correction when the time/iteration limit is hit.
+		if (!eigen_xOpt.allFinite())
 			eigen_xOpt.setZero();
 	}
 

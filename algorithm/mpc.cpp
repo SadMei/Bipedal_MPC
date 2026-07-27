@@ -93,6 +93,7 @@ MPC::MPC(double dtIn) : QP(nu * ch, nc * ch) {
 
   Xd.setZero();     // 期望的机器人状态轨迹向量 (未来N个时刻)
   X_cur.setZero();  // 机器人当前状态向量
+  X_pred.setZero(); // QP模型在预测时域内给出的状态序列
   X_cal.setZero();  // 通过MPC计算出的下一时刻状态
   dX_cal.setZero(); // 通过MPC计算出的状态变化率
 
@@ -131,6 +132,7 @@ MPC::MPC(double dtIn) : QP(nu * ch, nc * ch) {
   use_linear_inertia_prediction = false;
   use_linear_tau_dynamics = false;
   Ig_dot_filter_initialized = false;
+  nominal_Ig_initialized = false;
   qp_Status = 0;
   qp_nWSR = 0;
   qp_cpuTime = 0.0;
@@ -221,6 +223,19 @@ void MPC::dataBusRead(DataBus &Data) {
   X_cur.block<3, 1>(3, 0) = Data.q.block<3, 1>(0, 0);  // 质心位置
   X_cur.block<3, 1>(6, 0) = Data.dq.block<3, 1>(3, 0); // 角速度
   X_cur.block<3, 1>(9, 0) = Data.dq.block<3, 1>(0, 0); // 线速度
+
+  // Lock the SRBM inertia at the initial configuration of the active mass
+  // distribution. This preserves the fixed-inertia assumption without adding
+  // a static parameter mismatch when the leg inertias are scaled.
+  if (!nominal_Ig_initialized && Data.inertia.allFinite() &&
+      Data.inertia.determinant() > 1e-9) {
+    const Eigen::Matrix3d R_yaw = Rz3(X_cur(2));
+    nominal_Ig = R_yaw.transpose() * Data.inertia * R_yaw;
+    nominal_Ig = 0.5 * (nominal_Ig + nominal_Ig.transpose());
+    nominal_Ig_initialized = true;
+    std::cout << "[MPC] calibrated fixed SRBM inertia at initial configuration:\n"
+              << nominal_Ig << std::endl;
+  }
 
   // --- 2. 更新期望状态轨迹 Xd ---
   if (EN) { // 如果MPC启用
@@ -712,12 +727,10 @@ void MPC::cal() {
       for (int i = 0; i < nu * ch; i++)
         Ufe(i) = xOpt[i]; // 将结果存入Ufe向量
     } else {
-      constexpr double kQpFallbackDecay = 0.90;
       Eigen::Matrix<double, nu, 1> fallback_u = Ufe_pre;
-      if (!fallback_u.allFinite() || fallback_u.block<12, 1>(0, 0).norm() < 1e-6) {
+      if (!fallback_u.allFinite()) {
         fallback_u = Guess_value.block<nu, 1>(0, 0);
       }
-      fallback_u *= kQpFallbackDecay;
 
       auto clearSwingWrench = [](Eigen::Matrix<double, nu, 1> &u,
                                  int support_state) {
@@ -768,8 +781,10 @@ void MPC::cal() {
       delta_X(i + 6) = dX_cal(i + 6) * dt;            // 角速度
       delta_X(i + 9) = dX_cal(i + 9) * dt;            // 线速度
     }
-    // 使用预测矩阵计算下一时刻的状态，并加入补偿与仿射偏置项 Cqp
-    X_cal = (Aqp * X_cur + Bqp * Ufe + Cqp).block<nx, 1>(nx * 0, 0) + delta_X;
+    // 保存QP代价函数所使用的完整预测序列。X_cal保留原有的一步
+    // 二阶补偿，仅用于现有下层接口。
+    X_pred = Aqp * X_cur + Bqp * Ufe + Cqp;
+    X_cal = X_pred.block<nx, 1>(0, 0) + delta_X;
 
     Ufe_pre = Ufe.block<nu, 1>(0, 0); // 保存当前周期的控制输入，以备后用
 
@@ -825,6 +840,17 @@ void MPC::disable() { EN = false; }
 
 /** @brief 获取MPC启用状态 */
 bool MPC::get_ENA() { return EN; }
+
+const Eigen::Matrix3d &MPC::getNominalInertia() const { return nominal_Ig; }
+
+bool MPC::hasCalibratedNominalInertia() const {
+  return nominal_Ig_initialized;
+}
+
+const Eigen::Matrix<double, nx * mpc_N, 1> &
+MPC::getPredictedStateSequence() const {
+  return X_pred;
+}
 
 /**
  * @brief 工具函数：将Eigen格式的矩阵复制到qpOASES使用的real_t类型数组

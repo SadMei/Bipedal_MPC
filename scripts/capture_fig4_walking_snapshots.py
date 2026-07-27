@@ -21,7 +21,7 @@ from PIL import Image, ImageDraw, ImageFont
 from vicm_experiment_lib import BUILD_DIR, BIN, MPC_L_DIAG_MAIN, REPO_ROOT, make_env
 
 
-OUT_FIG = REPO_ROOT / "figures" / "manuscript_current" / "fig4_walking_snapshots.png"
+OUT_FIG = REPO_ROOT / "figures" / "manuscript_current" / "fig4_walking_snapshots.jpg"
 RESAMPLE_LANCZOS = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 LEG_STATE_LABELS = {
     0: "Left support",
@@ -222,7 +222,7 @@ def assemble_montage(
         raise RuntimeError(f"expected {len(frame_paths)} sample times, found {len(sample_times)}")
 
     raw_crop_w = 300
-    tile_h = 360
+    tile_h = 720
     raw_h = Image.open(frame_paths[0]).height
     tile_w = int(round(tile_h * raw_crop_w / raw_h))
     canvas_w = tile_w * len(frame_paths)
@@ -236,7 +236,7 @@ def assemble_montage(
 
     overlay = Image.new("RGBA", canvas.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
-    label_font = load_font(22)
+    label_font = load_font(44)
 
     states = sampled_support_states(trace_path, sample_times, double_support_threshold)
     for start_idx, end_idx, state in support_runs(states):
@@ -252,7 +252,10 @@ def assemble_montage(
     canvas = Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(out_path, dpi=(300, 300))
+    if out_path.suffix.lower() in {".jpg", ".jpeg"}:
+        canvas.save(out_path, dpi=(300, 300), quality=90, optimize=True)
+    else:
+        canvas.save(out_path, dpi=(300, 300))
 
 
 def main() -> int:

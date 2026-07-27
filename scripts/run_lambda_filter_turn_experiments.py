@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from vicm_experiment_lib import paired_uncertainty_profile
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILD_DIR = REPO_ROOT / "build"
@@ -47,10 +49,18 @@ class TrialResult:
     controller: str
     lambda_scale: float
     rep: int
+    noise_enabled: int
+    noise_seed: int
+    push_force: float
+    push_start: float
+    push_duration: float
+    push_angle_deg: float
     fall: int
     fall_time: float
     final_time: float
     steps: int
+    mpc_qp_fail_frames: int
+    wbc_qp_fail_frames: int
     rms_wz_err: float
     max_abs_wz_err: float
     rms_yaw_err: float
@@ -78,6 +88,7 @@ def parse_trial(
     sim_end: float,
     wall_time_s: float,
     out_dir: Path,
+    uncertainty: dict[str, float | int | bool],
 ) -> TrialResult:
     with trace_path.open(newline="") as f:
         rows = list(csv.DictReader(f))
@@ -91,6 +102,12 @@ def parse_trial(
     eval_rows = [r for r in rows if float(r["time"]) >= 4.0]
     wz_err = [float(r["wz"]) - float(r["wz_ref"]) for r in eval_rows]
     yaw_err = [float(r["yaw"]) - float(r["yaw_ref"]) for r in eval_rows]
+    mpc_qp_fail_frames = sum(
+        1 for row in rows if int(float(row.get("mpc_qp_status", "0"))) != 0
+    )
+    wbc_qp_fail_frames = sum(
+        1 for row in rows if int(float(row.get("wbc_qp_status", "0"))) != 0
+    )
 
     delta_fr_values: list[float] = []
     for row in eval_rows:
@@ -108,17 +125,27 @@ def parse_trial(
             for row in csv.DictReader(f):
                 if float(row["time"]) >= 4.0:
                     srbm_pred_err.append(float(row["srbm_err_norm"]))
-                    vicm_pred_err.append(float(row["vicm_err_norm"]))
+                    ir_error = row.get("ir_err_norm", row.get("vicm_err_norm", ""))
+                    if ir_error != "":
+                        vicm_pred_err.append(float(ir_error))
 
     return TrialResult(
         case=case,
         controller=controller,
         lambda_scale=lambda_scale,
         rep=rep,
+        noise_enabled=int(bool(uncertainty["noise_enabled"])),
+        noise_seed=int(uncertainty["noise_seed"]),
+        push_force=float(uncertainty["push_force"]),
+        push_start=float(uncertainty["push_start"]),
+        push_duration=float(uncertainty["push_duration"]),
+        push_angle_deg=float(uncertainty["push_angle_deg"]),
         fall=fall,
         fall_time=fall_time,
         final_time=final_time,
         steps=int(float(last["step_count"])),
+        mpc_qp_fail_frames=mpc_qp_fail_frames,
+        wbc_qp_fail_frames=wbc_qp_fail_frames,
         rms_wz_err=rms(wz_err),
         max_abs_wz_err=max((abs(v) for v in wz_err), default=math.nan),
         rms_yaw_err=rms(yaw_err),
@@ -144,6 +171,36 @@ def write_csv(path: Path, rows: list[dict[str, object]], fields: list[str] | Non
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def load_trial_results(path: Path) -> list[TrialResult]:
+    if not path.exists():
+        return []
+
+    int_fields = {
+        "rep",
+        "noise_enabled",
+        "noise_seed",
+        "fall",
+        "steps",
+        "mpc_qp_fail_frames",
+        "wbc_qp_fail_frames",
+    }
+    string_fields = {"case", "controller", "log_path", "trace_path", "pred_path"}
+    results: list[TrialResult] = []
+    with path.open(newline="") as f:
+        for row in csv.DictReader(f):
+            values: dict[str, object] = {}
+            for field in TrialResult.__dataclass_fields__:
+                value = row[field]
+                if field in string_fields:
+                    values[field] = value
+                elif field in int_fields:
+                    values[field] = int(float(value))
+                else:
+                    values[field] = float(value)
+            results.append(TrialResult(**values))
+    return results
 
 
 def summarize(results: list[TrialResult]) -> list[dict[str, object]]:
@@ -206,6 +263,43 @@ def paired_summary(results: list[TrialResult]) -> list[dict[str, object]]:
     return rows
 
 
+def trial_uncertainty_profile(
+    rep: int, args: argparse.Namespace
+) -> dict[str, float | int | bool | str]:
+    uncertainty: dict[str, float | int | bool | str] = dict(
+        paired_uncertainty_profile(rep, args.uncertainty_base_seed)
+    )
+    if not args.paired_light_uncertainty:
+        uncertainty = dict(
+            paired_uncertainty_profile(1, args.uncertainty_base_seed)
+        )
+
+    if bool(uncertainty["noise_enabled"]):
+        for key in list(uncertainty):
+            if key.startswith("noise_") and key.endswith("_std"):
+                uncertainty[key] = (
+                    float(uncertainty[key]) * args.uncertainty_noise_scale
+                )
+
+    uncertainty["push_trigger_mode"] = "time"
+    uncertainty["push_trigger_phi"] = 0.5
+    if args.fixed_phase_push and rep > 1:
+        push_angle_rad = math.radians(args.fixed_push_angle)
+        uncertainty.update(
+            {
+                "push_force": args.fixed_push_force,
+                "push_start": args.fixed_push_start,
+                "push_duration": args.fixed_push_duration,
+                "push_angle_deg": args.fixed_push_angle,
+                "push_dir_x": math.cos(push_angle_rad),
+                "push_dir_y": math.sin(push_angle_rad),
+                "push_trigger_mode": "phase",
+                "push_trigger_phi": args.fixed_push_phi,
+            }
+        )
+    return uncertainty
+
+
 def run_trial(
     out_dir: Path,
     lambda_scale: float,
@@ -213,6 +307,7 @@ def run_trial(
     rep: int,
     args: argparse.Namespace,
 ) -> TrialResult:
+    uncertainty = trial_uncertainty_profile(rep, args)
     case = f"lam{token(lambda_scale)}_{controller}_turn_posrot{token(args.posrot_att_scale)}_filtertau_r{rep}"
     env = os.environ.copy()
     env.update(
@@ -247,6 +342,23 @@ def run_trial(
             "ODC_SINE_WZ_AMP": f"{args.sine_wz_amp:.12g}",
             "ODC_SINE_WZ_PERIOD": f"{args.sine_wz_period:.12g}",
             "ODC_SINE_WZ_START_TIME": f"{args.sine_wz_start:.12g}",
+            "ODC_PUSH_FORCE": f"{float(uncertainty['push_force']):.12g}",
+            "ODC_PUSH_START_TIME": f"{float(uncertainty['push_start']):.12g}",
+            "ODC_PUSH_DURATION": f"{float(uncertainty['push_duration']):.12g}",
+            "ODC_PUSH_DIR_X": f"{float(uncertainty['push_dir_x']):.12g}",
+            "ODC_PUSH_DIR_Y": f"{float(uncertainty['push_dir_y']):.12g}",
+            "ODC_PUSH_DIR_Z": "0",
+            "ODC_PUSH_TRIGGER_MODE": str(uncertainty["push_trigger_mode"]),
+            "ODC_PUSH_TRIGGER_PHI": f"{float(uncertainty['push_trigger_phi']):.12g}",
+            "ODC_SENSOR_NOISE_ENABLE": "1" if uncertainty["noise_enabled"] else "0",
+            "ODC_SENSOR_NOISE_SEED": str(int(uncertainty["noise_seed"])),
+            "ODC_NOISE_BASE_POS_STD": f"{float(uncertainty['noise_base_pos_std']):.12g}",
+            "ODC_NOISE_BASE_RPY_STD": f"{float(uncertainty['noise_base_rpy_std']):.12g}",
+            "ODC_NOISE_BASE_VEL_STD": f"{float(uncertainty['noise_base_vel_std']):.12g}",
+            "ODC_NOISE_BASE_OMEGA_STD": f"{float(uncertainty['noise_base_omega_std']):.12g}",
+            "ODC_NOISE_JOINT_POS_STD": f"{float(uncertainty['noise_joint_pos_std']):.12g}",
+            "ODC_NOISE_JOINT_VEL_STD": f"{float(uncertainty['noise_joint_vel_std']):.12g}",
+            "ODC_NOISE_FOOT_FORCE_STD": f"{float(uncertainty['noise_foot_force_std']):.12g}",
         }
     )
     if controller == "vicm":
@@ -273,9 +385,13 @@ def run_trial(
     trace_dst = out_dir / f"{case}_trace.csv"
     shutil.copyfile(trace_src, trace_dst)
 
+    # The high-rate datalog duplicates the retained trace and can exceed 100 MB
+    # per trial. Keep the compact trace/prediction files and release this scratch
+    # file before the next run.
     datalog_src = RECORD_DIR / "exp1_datalog.log"
     if datalog_src.exists():
-        shutil.copyfile(datalog_src, out_dir / f"{case}_datalog.log")
+        with datalog_src.open("w"):
+            pass
 
     pred_src = RECORD_DIR / f"pred_error_exp1_{case}_lf0.500000.csv"
     pred_dst = out_dir / f"{case}_pred_error.csv"
@@ -293,6 +409,7 @@ def run_trial(
         args.sim_end,
         wall_time_s,
         out_dir,
+        uncertainty,
     )
 
 
@@ -301,6 +418,7 @@ def main() -> int:
     parser.add_argument("--start", type=float, default=0.5)
     parser.add_argument("--step", type=float, default=0.1)
     parser.add_argument("--max-lambda", type=float, default=2.4)
+    parser.add_argument("--rep-start", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--sim-end", type=float, default=30.0)
     parser.add_argument("--vx", type=float, default=1.5)
@@ -315,8 +433,18 @@ def main() -> int:
     parser.add_argument("--sine-wz-start", type=float, default=4.0)
     parser.add_argument("--torque-limit-scale", type=float, default=1.2)
     parser.add_argument("--walk-leg-pd-scale", type=float, default=1.2)
+    parser.add_argument("--paired-light-uncertainty", action="store_true")
+    parser.add_argument("--uncertainty-base-seed", type=int, default=2026072200)
+    parser.add_argument("--uncertainty-noise-scale", type=float, default=1.0)
+    parser.add_argument("--fixed-phase-push", action="store_true")
+    parser.add_argument("--fixed-push-force", type=float, default=20.0)
+    parser.add_argument("--fixed-push-start", type=float, default=8.0)
+    parser.add_argument("--fixed-push-duration", type=float, default=0.10)
+    parser.add_argument("--fixed-push-angle", type=float, default=0.0)
+    parser.add_argument("--fixed-push-phi", type=float, default=0.5)
     parser.add_argument("--stop-threshold", type=float, default=8.0)
     parser.add_argument("--stop-consecutive", type=int, default=2)
+    parser.add_argument("--resume-dir", type=Path)
     parser.add_argument(
         "--mpc-l-diag",
         default="50 50 80 1 200 1 1 1 10 100 10 1",
@@ -325,10 +453,17 @@ def main() -> int:
 
     if not BIN.exists():
         raise FileNotFoundError(f"missing executable: {BIN}")
+    if args.rep_start < 1 or args.rep_start > args.repeats:
+        raise ValueError("--rep-start must satisfy 1 <= rep-start <= repeats")
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = RECORD_DIR / f"lambda_filter_turn_exp1_{stamp}"
-    out_dir.mkdir(parents=True)
+    if args.resume_dir is not None:
+        out_dir = args.resume_dir.resolve()
+        if not out_dir.is_dir():
+            raise FileNotFoundError(f"missing resume directory: {out_dir}")
+    else:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = RECORD_DIR / f"lambda_filter_turn_exp1_{stamp}"
+        out_dir.mkdir(parents=True)
 
     metadata = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -336,6 +471,7 @@ def main() -> int:
         "start": args.start,
         "step": args.step,
         "max_lambda": args.max_lambda,
+        "rep_start": args.rep_start,
         "repeats": args.repeats,
         "sim_end": args.sim_end,
         "vx": args.vx,
@@ -347,34 +483,79 @@ def main() -> int:
         "ig_dot_filter_tau": args.ig_dot_filter_tau,
         "wbc_delta_fr_weight": "default_1e1",
         "wbc_delta_ddq_weight": "default_1e7",
+        "wbc_qp_termination": "1ms_wall_clock_and_nWSR_200",
+        "mpc_qp_termination": "5ms_wall_clock",
+        "qp_failure_fallback": "hold_previous_solution_without_decay",
+        "paper_experiment": "Experiment 1: paired leg-inertia sweep",
         "sine_wz_amp": args.sine_wz_amp,
         "sine_wz_period": args.sine_wz_period,
         "sine_wz_start": args.sine_wz_start,
+        "paired_light_uncertainty": args.paired_light_uncertainty,
+        "uncertainty_base_seed": args.uncertainty_base_seed,
+        "uncertainty_noise_scale": args.uncertainty_noise_scale,
+        "fixed_phase_push": args.fixed_phase_push,
+        "fixed_push_force": args.fixed_push_force,
+        "fixed_push_start": args.fixed_push_start,
+        "fixed_push_duration": args.fixed_push_duration,
+        "fixed_push_angle": args.fixed_push_angle,
+        "fixed_push_phi": args.fixed_push_phi,
+        "uncertainty_repetition_1": "deterministic_no_noise_no_push",
+        "uncertainty_repetitions_2_to_5": (
+            "scaled_seeded_sensor_noise_plus_fixed_phase_push"
+            if args.fixed_phase_push
+            else "seeded_light_sensor_noise_plus_20N_0.10s_push"
+        ),
         "mpc_l_diag": args.mpc_l_diag,
     }
-    write_csv(out_dir / "metadata.csv", [metadata])
+    if args.resume_dir is None:
+        write_csv(out_dir / "metadata.csv", [metadata])
+        write_csv(
+            out_dir / "uncertainty_profiles.csv",
+            [
+                {"rep": rep, **trial_uncertainty_profile(rep, args)}
+                for rep in range(args.rep_start, args.repeats + 1)
+            ],
+        )
 
     result_fields = list(TrialResult.__dataclass_fields__.keys())
-    all_results: list[TrialResult] = []
+    results_path = out_dir / "trials.csv"
+    all_results = load_trial_results(results_path) if args.resume_dir is not None else []
+    completed = {
+        (round(result.lambda_scale, 10), result.controller, result.rep)
+        for result in all_results
+    }
     completed_lambdas: list[float] = []
     bad_streak = 0
 
-    results_path = out_dir / "trials.csv"
-    with results_path.open("w", newline="") as f:
+    csv_mode = "a" if args.resume_dir is not None else "w"
+    with results_path.open(csv_mode, newline="") as f:
         writer = csv.DictWriter(f, fieldnames=result_fields)
-        writer.writeheader()
+        if args.resume_dir is None:
+            writer.writeheader()
 
         lambda_scale = args.start
         while lambda_scale <= args.max_lambda + 1e-9:
             lambda_scale = round(lambda_scale, 10)
             print(f"=== VICM lambda={lambda_scale:.3f} ===", flush=True)
-            current: list[TrialResult] = []
-            for rep in range(1, args.repeats + 1):
+            current = [
+                result
+                for result in all_results
+                if round(result.lambda_scale, 10) == lambda_scale
+                and result.controller == "vicm"
+            ]
+            for rep in range(args.rep_start, args.repeats + 1):
+                if (lambda_scale, "vicm", rep) in completed:
+                    print(
+                        f"skip completed: lambda={lambda_scale:.3f} vicm rep={rep}",
+                        flush=True,
+                    )
+                    continue
                 result = run_trial(out_dir, lambda_scale, "vicm", rep, args)
                 writer.writerow(result.__dict__)
                 f.flush()
                 all_results.append(result)
                 current.append(result)
+                completed.add((lambda_scale, "vicm", rep))
                 print(
                     f"{result.case}: final={result.final_time:.3f}s "
                     f"fall={result.fall} wz_rms={result.rms_wz_err:.3f} "
@@ -400,11 +581,18 @@ def main() -> int:
         print("=== SRBM over completed lambda values ===", flush=True)
         for lambda_scale in completed_lambdas:
             print(f"=== SRBM lambda={lambda_scale:.3f} ===", flush=True)
-            for rep in range(1, args.repeats + 1):
+            for rep in range(args.rep_start, args.repeats + 1):
+                if (lambda_scale, "srbm", rep) in completed:
+                    print(
+                        f"skip completed: lambda={lambda_scale:.3f} srbm rep={rep}",
+                        flush=True,
+                    )
+                    continue
                 result = run_trial(out_dir, lambda_scale, "srbm", rep, args)
                 writer.writerow(result.__dict__)
                 f.flush()
                 all_results.append(result)
+                completed.add((lambda_scale, "srbm", rep))
                 print(
                     f"{result.case}: final={result.final_time:.3f}s "
                     f"fall={result.fall} wz_rms={result.rms_wz_err:.3f} "

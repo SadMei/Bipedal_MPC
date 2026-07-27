@@ -26,9 +26,10 @@ from matplotlib.patches import Arc, PathPatch, Rectangle
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "figures" / "manuscript_current"
 
-EXP1_DIR = ROOT / "record" / "lambda_filter_turn_exp1_20260604_220713"
-EXP2_DIR = ROOT / "record" / "exp2_velocity_ramp_lam1_20260606_165735"
-EXP3_DIR = ROOT / "record" / "exp3_model_ablation_lam1p7_20260606_175527"
+EXP1_DIR = ROOT / "record" / "lambda_filter_turn_exp1_20260722_232307"
+EXP1_RETRY_DIRS: dict[float, Path] = {}
+EXP3_DIR = ROOT / "record" / "exp3_model_ablation_lam1p8_20260722_211126"
+EXP3_NF_RETRY_DIR = EXP3_DIR
 EXP4_DIR = ROOT / "record" / "exp4_push_recovery_lam1p7_20260611_224747"
 
 INK = "#1F2430"
@@ -37,6 +38,7 @@ GRID = "#E6E8F0"
 AXIS = "#D7DBE7"
 SRBM = "#2E4780"
 VICM = "#CC6F47"
+VICM_LABEL = "IR-CMPC (Ours)"
 REF = "#464C55"
 OLIVE = "#71B436"
 PINK = "#BD569B"
@@ -46,7 +48,10 @@ NEUTRAL = "#7A828F"
 MODEL_COLORS = {
     "SRBM": SRBM,
     "VICM": VICM,
+    VICM_LABEL: VICM,
     "VICM-Ac": VICM,
+    "VI-CMPC": OLIVE,
+    "IR-CMPC-NF": PINK,
     "VICM-IG": OLIVE,
     "VICM-Ig": OLIVE,
     "VICM-NF": PINK,
@@ -229,43 +234,50 @@ def add_top_brace(
 
 def plot_exp1_survival() -> None:
     rows = read_rows(EXP1_DIR / "summary.csv")
+    for lam, retry_dir in EXP1_RETRY_DIRS.items():
+        rows = [row for row in rows if not math.isclose(fval(row, "lambda_scale"), lam)]
+        rows.extend(read_rows(retry_dir / "summary.csv"))
     grouped: dict[str, list[tuple[float, float, float]]] = defaultdict(list)
     for row in rows:
         lam = fval(row, "lambda_scale")
         if lam < 1.0:
             continue
         ctrl = "SRBM" if row["controller"] == "srbm" else "VICM"
-        grouped[ctrl].append((lam, fval(row, "mean_final_time"), fval(row, "std_final_time", 0.0)))
+        grouped[ctrl].append(
+            (lam, fval(row, "mean_final_time"), fval(row, "std_final_time", 0.0))
+        )
 
     fig, ax = plt.subplots(figsize=(3.45, 2.55))
 
     regions = [
-        (0.98, 1.65, "(a) Nominal", "#EEF1F6"),
-        (1.65, 2.05, "(b) Advantage", "#F8E8DF"),
-        (2.05, 2.32, "(c) Failure", "#EEF1F6"),
+        (0.98, 1.75, r"(a) Low/mid", "#EEF1F6"),
+        (1.75, 2.05, r"(b) Advantage", "#E8F0FA"),
+        (2.05, 2.32, r"(c) High", "#EEF1F6"),
     ]
     for x0, x1, _, color in regions:
         ax.axvspan(x0, x1, color=color, alpha=0.55, zorder=0)
-    for x in [1.65, 2.05]:
+    for x in [1.75, 2.05]:
         ax.axvline(x, color=AXIS, linewidth=0.6, linestyle="--", zorder=1)
 
     for ctrl, marker, linestyle in [("SRBM", "o", "-"), ("VICM", "s", "--")]:
         pts = sorted(grouped[ctrl])
         x = np.asarray([p[0] for p in pts])
         y = np.asarray([p[1] for p in pts])
-        e = np.asarray([p[2] for p in pts])
+        yerr = np.asarray([p[2] for p in pts])
         ax.errorbar(
             x,
             y,
-            yerr=e,
+            yerr=yerr,
             color=MODEL_COLORS[ctrl],
             marker=marker,
             linestyle=linestyle,
             linewidth=1.25,
             markersize=3.2,
-            capsize=2,
-            capthick=0.7,
-            label=ctrl,
+            elinewidth=0.75,
+            capsize=2.0,
+            capthick=0.75,
+            zorder=4,
+            label=VICM_LABEL if ctrl == "VICM" else ctrl,
         )
 
     ax.axhline(30.0, color=REF, linewidth=0.8, linestyle=":")
@@ -303,6 +315,24 @@ def plot_exp1_survival() -> None:
             "alpha": 0.86,
         },
     )
+    ax.text(
+        1.90,
+        4.7,
+        "IR-CMPC\nadvantage window",
+        ha="center",
+        va="center",
+        fontsize=6.8,
+        color=MODEL_COLORS["VICM"],
+        fontweight="semibold",
+        bbox={
+            "facecolor": "white",
+            "edgecolor": MODEL_COLORS["VICM"],
+            "linewidth": 0.55,
+            "pad": 2.0,
+            "alpha": 0.82,
+        },
+        zorder=5,
+    )
     ax.set_xlabel(r"Leg inertia scale $\lambda$")
     ax.set_ylabel("Survival time [s]")
     ax.set_xlim(0.98, 2.32)
@@ -323,10 +353,10 @@ def plot_exp1_tracking() -> None:
             "(a)",
         ),
         (
-            "lam1p7",
-            r"$\lambda=1.7$",
-            EXP1_DIR / "lam1p7_srbm_turn_posrot0p35_filtertau_r1_trace.csv",
-            EXP1_DIR / "lam1p7_vicm_turn_posrot0p35_filtertau_r1_trace.csv",
+            "lam1p8",
+            r"$\lambda=1.8$",
+            EXP1_DIR / "lam1p8_srbm_turn_posrot0p35_filtertau_r1_trace.csv",
+            EXP1_DIR / "lam1p8_vicm_turn_posrot0p35_filtertau_r1_trace.csv",
             "(b)",
         ),
     ]
@@ -335,9 +365,9 @@ def plot_exp1_tracking() -> None:
     for idx, (ax, (_, lambda_label, srbm_path, vicm_path, label)) in enumerate(zip(axes, cases)):
         traces = [
             ("SRBM", trace_arrays(srbm_path, ["time", "vx", "vx_ref"]), SRBM, "-"),
-            ("VICM", trace_arrays(vicm_path, ["time", "vx", "vx_ref"]), VICM, "--"),
+            (VICM_LABEL, trace_arrays(vicm_path, ["time", "vx", "vx_ref"]), VICM, "--"),
         ]
-        srbm_fail_point: tuple[float, float] | None = None
+        fail_points: dict[str, tuple[float, float]] = {}
         for ctrl, data, color, linestyle in traces:
             t = data["time"]
             y_smooth = smooth_by_time(t, data["vx"], 0.15)
@@ -349,8 +379,8 @@ def plot_exp1_tracking() -> None:
                 linewidth=1.0,
                 label=ctrl,
             )
-            if ctrl == "SRBM" and idx == 1 and len(t) > 0:
-                srbm_fail_point = (float(t[-1]), float(y_smooth[-1]))
+            if idx == 1 and len(t) > 0 and float(t[-1]) < 29.9:
+                fail_points[ctrl] = (float(t[-1]), float(y_smooth[-1]))
         ref = traces[-1][1]
         ax.plot(ref["time"], ref["vx_ref"], color=REF, linewidth=0.8, linestyle=":", label="Reference")
         ax.set_xlim(0, 30)
@@ -369,8 +399,8 @@ def plot_exp1_tracking() -> None:
             color=INK,
             clip_on=True,
         )
-        if srbm_fail_point is not None:
-            fail_t, fail_v = srbm_fail_point
+        if "SRBM" in fail_points:
+            fail_t, fail_v = fail_points["SRBM"]
             ax.annotate(
                 "SRBM fail",
                 xy=(fail_t, fail_v),
@@ -386,6 +416,25 @@ def plot_exp1_tracking() -> None:
                 va="center",
                 fontsize=6.8,
                 color=SRBM,
+                bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.0, "alpha": 0.78},
+            )
+        if VICM_LABEL in fail_points:
+            fail_t, fail_v = fail_points[VICM_LABEL]
+            ax.annotate(
+                "IR-CMPC fail",
+                xy=(fail_t, fail_v),
+                xytext=(fail_t + 1.2, 0.73),
+                arrowprops={
+                    "arrowstyle": "->",
+                    "lw": 0.75,
+                    "color": VICM,
+                    "shrinkA": 2,
+                    "shrinkB": 2,
+                },
+                ha="left",
+                va="center",
+                fontsize=6.8,
+                color=VICM,
                 bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.0, "alpha": 0.78},
             )
         clean_axes(ax)
@@ -404,88 +453,26 @@ def plot_exp1_tracking() -> None:
     save(fig, OUT_DIR / "exp1_representative_tracking_body_forward.png")
 
 
-def plot_exp2_velocity_ramp() -> None:
-    traces = {
-        ("vx", "SRBM"): trace_arrays(
-            EXP2_DIR / "exp2_lam1_vx_ramp_srbm_trace.csv",
-            ["time", "vx", "vx_ref"],
-        ),
-        ("vx", "VICM"): trace_arrays(
-            EXP2_DIR / "exp2_lam1_vx_ramp_vicm_ac_trace.csv",
-            ["time", "vx", "vx_ref"],
-        ),
-        ("vy", "SRBM"): trace_arrays(
-            EXP2_DIR / "exp2_lam1_vy_ramp_srbm_trace.csv",
-            ["time", "vy", "vy_ref"],
-        ),
-        ("vy", "VICM"): trace_arrays(
-            EXP2_DIR / "exp2_lam1_vy_ramp_vicm_ac_trace.csv",
-            ["time", "vy", "vy_ref"],
-        ),
-    }
-
-    fig, axes = plt.subplots(2, 1, figsize=(3.45, 3.95), sharex=False)
-    configs = [
-        (axes[0], "vx", "vx_ref", r"$v_x$ [m/s]", "(a)"),
-        (axes[1], "vy", "vy_ref", r"$v_y$ [m/s]", "(b)"),
-    ]
-    for ax, axis_key, ref_key, ylabel, label in configs:
-        for ctrl, color, linestyle in [("SRBM", SRBM, "-"), ("VICM", VICM, "--")]:
-            data = traces[(axis_key, ctrl)]
-            t = data["time"]
-            ax.plot(
-                t,
-                smooth_by_time(t, data[axis_key], 0.18),
-                color=color,
-                linestyle=linestyle,
-                linewidth=1.05,
-                label=ctrl,
-            )
-        ref_data = traces[(axis_key, "VICM")]
-        ax.plot(ref_data["time"], ref_data[ref_key], color=REF, linewidth=0.85, linestyle=":", label="Reference")
-        ax.set_ylabel(ylabel)
-        ax.set_xlim(0, 16)
-        ax.set_xlabel("Time [s]")
-        panel_label(ax, label, x=-0.14, y=1.12)
-        clean_axes(ax)
-    axes[0].text(
-        0.02,
-        0.88,
-        r"$\lambda=1.0$",
-        transform=axes[0].transAxes,
-        ha="left",
-        va="top",
-        fontsize=7.5,
-        color=INK,
-        bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.0, "alpha": 0.78},
-    )
-    axes[0].legend(loc="lower right", frameon=False, ncol=3, columnspacing=0.8, handlelength=1.8)
-    fig.subplots_adjust(hspace=0.46)
-    save(fig, OUT_DIR / "exp2_nominal_velocity_ramp_tracking.png")
-
-
 def plot_exp3_ablation() -> None:
     rows = read_rows(EXP3_DIR / "summary.csv")
     by_label = {row["controller_label"]: row for row in rows}
     label_map = [
         ("SRBM", "SRBM"),
-        ("VICM-Ac", "VICM"),
-        ("VICM-Ig", "VICM-IG"),
-        ("VICM-Ac no filter", "VICM-NF"),
+        ("VICM-Ig", "VI-CMPC"),
+        ("VICM-Ac", VICM_LABEL),
+        ("VICM-Ac no filter", "IR-CMPC-NF"),
     ]
     pairs = [(raw, shown) for raw, shown in label_map if raw in by_label]
     labels = [shown for _, shown in pairs]
 
     specs = [
         ("mean_final_time", "Survival time [s]", "(a)", (0, 32)),
-        ("mean_rms_vicm_pred_err", r"One-step error of $\omega$ [rad/s]", "(b)", None),
-        ("mean_rms_wz_err", r"RMS error of $\omega_z$ [rad/s]", "(c)", None),
-        ("mean_max_torso_angle_error", "Maximum torso error [rad]", "(d)", None),
+        ("mean_rms_wz_err", r"RMS error of $\omega_z$ [rad/s]", "(b)", None),
     ]
 
-    fig, axes = plt.subplots(4, 1, figsize=(3.45, 6.15))
+    fig, axes = plt.subplots(3, 1, figsize=(3.45, 4.75))
     y = np.arange(len(labels))
-    for idx, (ax, (field, xlabel, label, xlim)) in enumerate(zip(axes.flat, specs)):
+    for idx, (ax, (field, xlabel, label, xlim)) in enumerate(zip(axes[:2], specs)):
         vals = [fval(by_label[raw], field) for raw, _ in pairs]
         err_field = field.replace("mean_", "std_", 1)
         errs = [fval(by_label[raw], err_field, 0.0) for raw, _ in pairs]
@@ -498,18 +485,76 @@ def plot_exp3_ablation() -> None:
         panel_label(ax, label)
         if xlim is not None:
             ax.set_xlim(*xlim)
+        else:
+            ax.set_xlim(0.0, max(value + error for value, error in zip(vals, errs)) * 1.28)
+        if idx == 1 and "SRBM" in labels and VICM_LABEL in labels:
+            srbm_value = vals[labels.index("SRBM")]
+            vicm_index = labels.index(VICM_LABEL)
+            vicm_value = vals[vicm_index]
+            reduction = 100.0 * (srbm_value - vicm_value) / srbm_value
+            comparison = (
+                f"{reduction:.1f}% lower"
+                if reduction >= 0.0
+                else f"{abs(reduction):.1f}% higher"
+            )
+            ax.annotate(
+                comparison,
+                xy=(vicm_value + errs[vicm_index], y[vicm_index]),
+                xytext=(3, 0),
+                textcoords="offset points",
+                ha="left",
+                va="center",
+                fontsize=6.4,
+                color=MODEL_COLORS[VICM_LABEL],
+                fontweight="semibold",
+            )
         if idx == 0:
             ax.set_ylim(len(labels) - 0.5, -0.95)
             ax.text(
                 31.6,
                 -0.62,
-                r"$\lambda=1.7$",
+                r"$\lambda=1.8$",
                 ha="right",
                 va="center",
                 fontsize=7,
                 color=INK,
             )
         clean_axes(ax, grid_axis="x")
+
+    trial_rows = read_rows(EXP3_DIR / "trials.csv")
+    prediction_specs = [
+        ("rms_srbm_pred_err", "SRBM"),
+        ("rms_vi_pred_err", "VI-CMPC"),
+        ("rms_ir_pred_err", VICM_LABEL),
+        ("rms_ir_nf_pred_err", "IR-CMPC-NF"),
+    ]
+    pred_values = []
+    pred_errors = []
+    pred_labels = []
+    for field, label in prediction_specs:
+        samples = np.asarray([fval(row, field) for row in trial_rows], dtype=float)
+        samples = samples[np.isfinite(samples)]
+        pred_values.append(float(np.mean(samples)))
+        pred_errors.append(float(np.std(samples)))
+        pred_labels.append(label)
+    ax = axes[2]
+    pred_y = np.arange(len(pred_labels))
+    ax.barh(
+        pred_y,
+        pred_values,
+        xerr=pred_errors,
+        color=[MODEL_COLORS.get(item, NEUTRAL) for item in pred_labels],
+        edgecolor="white",
+        linewidth=0.5,
+        height=0.68,
+    )
+    ax.set_yticks(pred_y)
+    ax.set_yticklabels(pred_labels)
+    ax.invert_yaxis()
+    ax.set_xlim(0.0, max(v + e for v, e in zip(pred_values, pred_errors)) * 1.18)
+    ax.set_xlabel(r"One-step RMS error of $\omega$ [rad/s]", labelpad=8)
+    panel_label(ax, "(c)")
+    clean_axes(ax, grid_axis="x")
     fig.subplots_adjust(hspace=0.70)
     save(fig, OUT_DIR / "exp3_model_ablation_summary.png")
 
@@ -597,11 +642,15 @@ def plot_exp4_binary_recovery_and_boundary() -> None:
         )
     area_srbm = polar_area(by_ctrl.get("SRBM", []))
     area_vicm = polar_area(by_ctrl.get("VICM-Ac", []))
-    area_ratio = area_vicm / area_srbm if area_srbm > 1e-9 else math.nan
+    area_full = polar_area(
+        [(math.radians(direction), max(forces)) for direction in directions]
+    )
+    area_fraction_srbm = area_srbm / area_full if area_full > 1e-9 else math.nan
+    area_fraction_vicm = area_vicm / area_full if area_full > 1e-9 else math.nan
 
     fig = plt.figure(figsize=(6.8, 5.25))
     gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.18], hspace=0.72, wspace=0.30)
-    binary_cmap = ListedColormap(["white", "#111111"])
+    binary_cmap = ListedColormap(["white", SRBM])
     top_axes = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1])]
     for ax, ctrl, label in zip(top_axes, controllers, ["(a)", "(b)"]):
         matrix = np.asarray(
@@ -630,18 +679,35 @@ def plot_exp4_binary_recovery_and_boundary() -> None:
     top_axes[1].set_yticklabels([])
     top_axes[0].text(
         0.02,
-        1.10,
-        rf"$\lambda=1.7$" + "\n" + rf"Recovery area ratio" + "\n" + rf"$A_\mathrm{{VICM}}/A_\mathrm{{SRBM}}={area_ratio:.2f}$",
+        1.22,
+        rf"$\lambda=1.7$",
         transform=top_axes[0].transAxes,
         ha="left",
         va="bottom",
-        fontsize=7.2,
+        fontsize=7.0,
         color=INK,
     )
-    legend_y = 1.12
+    for ax, title, fraction, color in [
+        (top_axes[0], "SRBM", area_fraction_srbm, SRBM),
+        (top_axes[1], VICM_LABEL, area_fraction_vicm, VICM),
+    ]:
+        area_symbol = r"A_\mathrm{SRBM}" if title == "SRBM" else r"A_\mathrm{IR}"
+        ax.text(
+            0.50,
+            1.10,
+            title
+            + rf": ${area_symbol}/A_\mathrm{{full}}={fraction:.3f}$",
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            fontsize=7.0,
+            color=color,
+            fontweight="semibold",
+        )
+    legend_y = 1.22
     for x0, face, edge, label in [
-        (0.42, "#111111", "#111111", "Recovered"),
-        (0.75, "white", AXIS, "Failed"),
+        (0.48, SRBM, SRBM, "Recovered"),
+        (0.78, "white", AXIS, "Failed"),
     ]:
         rect = Rectangle(
             (x0, legend_y - 0.038),
@@ -672,7 +738,7 @@ def plot_exp4_binary_recovery_and_boundary() -> None:
             continue
         theta = np.asarray([p[0] for p in pts] + [pts[0][0]])
         radius = np.asarray([p[1] for p in pts] + [pts[0][1]])
-        label = "VICM" if ctrl == "VICM-Ac" else ctrl
+        label = VICM_LABEL if ctrl == "VICM-Ac" else ctrl
         ax.plot(theta, radius, color=color, linestyle=linestyle, linewidth=1.15, marker="o", markersize=3, label=label)
         ax.fill(theta, radius, color=color, alpha=0.09)
     ax.set_theta_zero_location("E")
@@ -763,7 +829,7 @@ def plot_exp4_polar_boundary() -> None:
             continue
         theta = np.asarray([p[0] for p in pts] + [pts[0][0]])
         radius = np.asarray([p[1] for p in pts] + [pts[0][1]])
-        ax.plot(theta, radius, color=color, linestyle=linestyle, linewidth=1.15, marker="o", markersize=3, label="VICM" if ctrl == "VICM-Ac" else ctrl)
+        ax.plot(theta, radius, color=color, linestyle=linestyle, linewidth=1.15, marker="o", markersize=3, label=VICM_LABEL if ctrl == "VICM-Ac" else ctrl)
         ax.fill(theta, radius, color=color, alpha=0.09)
     ax.set_theta_zero_location("E")
     ax.set_theta_direction(1)
@@ -807,7 +873,7 @@ def plot_exp4_lateral_response() -> None:
     for ax, key, ylabel, label in configs:
         for ctrl, data, color, linestyle in [
             ("SRBM", srbm, SRBM, "-"),
-            ("VICM", vicm, VICM, "--"),
+            (VICM_LABEL, vicm, VICM, "--"),
         ]:
             t = data["time"]
             y = data[key]
@@ -831,7 +897,6 @@ def main() -> None:
     set_ieee_style()
     plot_exp1_survival()
     plot_exp1_tracking()
-    plot_exp2_velocity_ramp()
     plot_exp3_ablation()
     plot_exp4_binary_recovery_and_boundary()
 

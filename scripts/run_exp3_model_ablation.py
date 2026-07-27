@@ -17,10 +17,13 @@ from vicm_experiment_lib import (
     append_csv,
     compute_trace_metrics,
     make_env,
+    mean,
     parse_controller_list,
+    paired_uncertainty_profile,
     plot_tracking,
     run_trial,
     setup_matplotlib,
+    stdev_pop,
     token,
     write_csv,
 )
@@ -33,15 +36,26 @@ TRIAL_FIELDS = [
     "lambda_scale",
     "wz_amp",
     "rep",
+    "noise_enabled",
+    "noise_seed",
+    "push_force",
+    "push_start",
+    "push_duration",
+    "push_angle_deg",
     "fall",
     "fall_time",
     "final_time",
     "steps",
+    "mpc_qp_fail_frames",
+    "wbc_qp_fail_frames",
     "task_valid",
     "rms_yaw_err",
     "rms_wz_err",
     "max_torso_angle_error",
     "rms_srbm_pred_err",
+    "rms_vi_pred_err",
+    "rms_ir_pred_err",
+    "rms_ir_nf_pred_err",
     "rms_vicm_pred_err",
     "rms_tau_mpc_norm",
     "mean_wbc_delta_fr_norm",
@@ -65,6 +79,9 @@ def plot_ablation(out_dir: Path, rows: list[dict[str, object]]) -> None:
             "rms_wz_err",
             "max_torso_angle_error",
             "rms_srbm_pred_err",
+            "rms_vi_pred_err",
+            "rms_ir_pred_err",
+            "rms_ir_nf_pred_err",
             "rms_vicm_pred_err",
             "rms_tau_mpc_norm",
             "mean_wbc_delta_fr_norm",
@@ -73,13 +90,33 @@ def plot_ablation(out_dir: Path, rows: list[dict[str, object]]) -> None:
     order = ["SRBM", "VICM-Ig", "VICM-Ac", "VICM-Ac no filter", "VICM affine tau"]
     summary.sort(key=lambda r: order.index(str(r["controller_label"])) if str(r["controller_label"]) in order else 99)
     write_csv(out_dir / "summary.csv", summary)
+    prediction_models = [
+        ("SRBM", "rms_srbm_pred_err"),
+        ("VI-CMPC", "rms_vi_pred_err"),
+        ("IR-CMPC", "rms_ir_pred_err"),
+        ("IR-CMPC-NF", "rms_ir_nf_pred_err"),
+    ]
+    prediction_summary = []
+    for model, field in prediction_models:
+        values = [float(row[field]) for row in rows]
+        prediction_summary.append(
+            {
+                "prediction_model": model,
+                "n_trajectories": len(values),
+                "mean_rms_error": mean(values),
+                "std_rms_error": stdev_pop(values),
+                "min_rms_error": min(values),
+                "max_rms_error": max(values),
+            }
+        )
+    write_csv(out_dir / "prediction_model_summary.csv", prediction_summary)
 
     labels = [str(r["controller_label"]) for r in summary]
     colors = ["#5477C4", "#71B436", "#CC6F47", "#BD569B", "#736422"][: len(labels)]
     fig, axes = plt.subplots(2, 2, figsize=(12, 7.4))
     specs = [
         ("mean_final_time", "final time [s]", "Closed-loop survival"),
-        ("mean_rms_vicm_pred_err", "one-step omega error", "VICM-form prediction error"),
+        ("mean_rms_ir_pred_err", "one-step omega error [rad/s]", "Inertia-rate prediction error"),
         ("mean_rms_wz_err", "wz RMS [rad/s]", "Yaw-rate response error"),
         ("mean_max_torso_angle_error", "torso max [rad]", "Torso disturbance"),
     ]
@@ -133,6 +170,8 @@ def main() -> int:
     parser.add_argument("--torque-limit-scale", type=float, default=1.2)
     parser.add_argument("--walk-leg-pd-scale", type=float, default=1.2)
     parser.add_argument("--gait-switch-threshold", type=float, default=100.0)
+    parser.add_argument("--paired-light-uncertainty", action="store_true")
+    parser.add_argument("--uncertainty-base-seed", type=int, default=2026072200)
     parser.add_argument("--mpc-l-diag", default=MPC_L_DIAG_MAIN)
     parser.add_argument("--max-yaw-rms", type=float, default=0.12)
     parser.add_argument("--max-wz-rms", type=float, default=0.65)
@@ -150,7 +189,21 @@ def main() -> int:
     out_dir = RECORD_DIR / f"exp3_model_ablation_lam{token(args.lambda_scale)}_{stamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
     FIGURE_DIR.mkdir(exist_ok=True)
-    write_csv(out_dir / "metadata.csv", [vars(args)])
+    metadata = {
+        **vars(args),
+        "paper_experiment": "Experiment 2: model ablation",
+        "wbc_qp_limit": "1ms_wall_clock_and_nWSR_200",
+        "mpc_qp_limit": "5ms_wall_clock",
+        "qp_failure_fallback": "hold_previous_solution_without_decay",
+    }
+    write_csv(out_dir / "metadata.csv", [metadata])
+    write_csv(
+        out_dir / "uncertainty_profiles.csv",
+        [
+            {"rep": rep, **paired_uncertainty_profile(rep, args.uncertainty_base_seed)}
+            for rep in range(1, args.repeats + 1)
+        ],
+    )
 
     rows: list[dict[str, object]] = []
     traces_for_plot: dict[str, Path] = {}
@@ -160,6 +213,9 @@ def main() -> int:
         label = CONTROLLER_LABELS[controller]
         print(f"=== exp3 {label} ===", flush=True)
         for rep in range(1, args.repeats + 1):
+            uncertainty = paired_uncertainty_profile(rep, args.uncertainty_base_seed)
+            if not args.paired_light_uncertainty:
+                uncertainty = paired_uncertainty_profile(1, args.uncertainty_base_seed)
             case = f"exp3_lam{token(args.lambda_scale)}_amp{token(args.wz_amp)}_{controller}_r{rep}"
             env, pred_lf = make_env(
                 exp_id=3,
@@ -182,6 +238,20 @@ def main() -> int:
                 sine_wz_period=args.wz_period,
                 sine_wz_start=args.sine_wz_start,
                 gait_switch_threshold=args.gait_switch_threshold,
+                push_force=float(uncertainty["push_force"]),
+                push_start=float(uncertainty["push_start"]),
+                push_duration=float(uncertainty["push_duration"]),
+                push_dir_x=float(uncertainty["push_dir_x"]),
+                push_dir_y=float(uncertainty["push_dir_y"]),
+                sensor_noise_enable=bool(uncertainty["noise_enabled"]),
+                sensor_noise_seed=int(uncertainty["noise_seed"]),
+                noise_base_pos_std=float(uncertainty["noise_base_pos_std"]),
+                noise_base_rpy_std=float(uncertainty["noise_base_rpy_std"]),
+                noise_base_vel_std=float(uncertainty["noise_base_vel_std"]),
+                noise_base_omega_std=float(uncertainty["noise_base_omega_std"]),
+                noise_joint_pos_std=float(uncertainty["noise_joint_pos_std"]),
+                noise_joint_vel_std=float(uncertainty["noise_joint_vel_std"]),
+                noise_foot_force_std=float(uncertainty["noise_foot_force_std"]),
             )
             start = time.monotonic()
             paths = run_trial(out_dir=out_dir, exp_id=3, case=case, env=env, pred_leg_fraction=pred_lf)
@@ -204,6 +274,12 @@ def main() -> int:
                 "lambda_scale": args.lambda_scale,
                 "wz_amp": args.wz_amp,
                 "rep": rep,
+                "noise_enabled": int(bool(uncertainty["noise_enabled"])),
+                "noise_seed": int(uncertainty["noise_seed"]),
+                "push_force": float(uncertainty["push_force"]),
+                "push_start": float(uncertainty["push_start"]),
+                "push_duration": float(uncertainty["push_duration"]),
+                "push_angle_deg": float(uncertainty["push_angle_deg"]),
                 **metrics,
                 "wall_time_s": wall_time,
                 "trace_path": str(paths.trace.relative_to(out_dir)),
@@ -218,7 +294,8 @@ def main() -> int:
                 f"{case}: final={float(metrics['final_time']):.3f}s "
                 f"fall={metrics['fall']} valid={metrics['task_valid']} "
                 f"pred_s={float(metrics['rms_srbm_pred_err']):.3f} "
-                f"pred_v={float(metrics['rms_vicm_pred_err']):.3f}",
+                f"pred_vi={float(metrics['rms_vi_pred_err']):.3f} "
+                f"pred_ir={float(metrics['rms_ir_pred_err']):.3f}",
                 flush=True,
             )
 
