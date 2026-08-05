@@ -273,6 +273,19 @@ void MPC::dataBusRead(DataBus &Data) {
       Xd(nx * (mpc_N - 1) + 6 + j) = Data.js_omega_des(j); // 期望角速度
     for (int j = 0; j < 3; j++)
       Xd(nx * (mpc_N - 1) + 9 + j) = Data.js_vel_des(j); // 期望线速度
+    if (Data.stair_terrain.enabled && Data.stair_nominal_base_height > 0.0) {
+      for (int i = 0; i < mpc_N; ++i) {
+        double support_height = Data.stair_support_height;
+        const double preview_phi =
+            Data.phi + static_cast<double>(i + 1) * dt /
+                           std::max(Data.tSwing, 1e-6);
+        if (preview_phi > 1.0 && Data.swingDesPosFinal_W.allFinite()) {
+          support_height = Data.stair_terrain.stepHeightAt(
+              Data.swingDesPosFinal_W(0));
+        }
+        Xd(nx * i + 5) = Data.stair_nominal_base_height + support_height;
+      }
+    }
   } else { // 如果MPC未启用，将期望状态设置为当前状态，用于保持静止
     for (int i = 0; i < mpc_N; i++) {
       Xd.block<12, 1>(nx * i, 0) = X_cur;
@@ -287,6 +300,8 @@ void MPC::dataBusRead(DataBus &Data) {
   pCoM = X_cur.block<3, 1>(3, 0);         // 当前质心位置
   pe.block<3, 1>(0, 0) = Data.fe_l_pos_W; // 左脚世界坐标
   pe.block<3, 1>(3, 0) = Data.fe_r_pos_W; // 右脚世界坐标
+  use_stair_contact_preview = Data.use_stair_contact_preview;
+  swing_touchdown_position = Data.swingDesPosFinal_W;
 
   // 计算从脚到质心的向量
   pf2com.block<3, 1>(0, 0) = pe.block<3, 1>(0, 0) - pCoM;
@@ -535,6 +550,17 @@ void MPC::cal() {
       Bc[i].setZero();
       // 在每个预测步长更新从脚到质心的向量
       pf2comi[i] = pf2com;
+      if (use_stair_contact_preview && legState[i] != legStateCur &&
+          swing_touchdown_position.allFinite() &&
+          swing_touchdown_position.squaredNorm() > 1e-8) {
+        if (legState[i] == DataBus::LSt) {
+          pf2comi[i].block<3, 1>(0, 0) =
+              swing_touchdown_position - pCoM;
+        } else if (legState[i] == DataBus::RSt) {
+          pf2comi[i].block<3, 1>(3, 0) =
+              swing_touchdown_position - pCoM;
+        }
+      }
       Eigen::Matrix3d Ic_W_inv;
 
       // Pinocchio centroidal inertia Ig is already expressed in the CoM frame

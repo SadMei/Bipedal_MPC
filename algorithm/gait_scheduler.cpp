@@ -125,7 +125,8 @@ void GaitScheduler::step() {
     const double FL_switch_z = useTouchSwitchForce ? FL_touch_z : FLest[2];
     const double FR_switch_z = useTouchSwitchForce ? FR_touch_z : FRest[2];
 
-    if (legState == DataBus::LSt && FR_switch_z >= FzThrehold && phi>=0.6){
+    if (legState == DataBus::LSt && FR_switch_z >= FzThrehold &&
+        phi >= minTouchdownPhase){
         if (enableNextStep){
             legState = DataBus::RSt;
             swingStartPos_W=fe_l_pos_W;
@@ -133,7 +134,8 @@ void GaitScheduler::step() {
             phi=0;
         }
     }
-    else if(legState == DataBus::RSt && FL_switch_z >= FzThrehold && phi>=0.6){
+    else if(legState == DataBus::RSt && FL_switch_z >= FzThrehold &&
+            phi >= minTouchdownPhase){
         if (enableNextStep) {
             legState = DataBus::LSt;
             swingStartPos_W = fe_r_pos_W;
@@ -168,7 +170,6 @@ void GaitScheduler::step() {
         legStateNext = DataBus::LSt;
     }
 }
-
 
 
 

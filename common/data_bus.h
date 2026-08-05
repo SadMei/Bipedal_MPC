@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Eigen/Dense"
+#include "terrain_profile.h"
 #include <cstdint>
 #include "iomanip"
 #include <iostream>
@@ -80,6 +81,11 @@ struct DataBus {
   std::vector<Eigen::Matrix3d> inertia_horizon;
   double controller_mass{77.35};
   double controller_leg_mass{0.0};
+  StairTerrainProfile stair_terrain;
+  bool use_stair_contact_preview{false};
+  double stair_nominal_base_height{0.0};
+  double stair_foot_contact_offset{0.0};
+  double stair_support_height{0.0};
 
   // Experiment configuration and plotting-friendly signals
   int exp_id{1};

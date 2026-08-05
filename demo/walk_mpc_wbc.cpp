@@ -39,8 +39,13 @@ Feel free to use in any purpose, and cite OpenLoong-Dynamics-Control in any styl
 const double dt = 0.001;
 const double dt_200Hz = 0.005;
 char error[1000] = "Could not load binary model";
-mjModel *mj_model = mj_loadXML("../models/scene.xml", 0, error, 1000);
-mjData *mj_data = mj_makeData(mj_model);
+const std::string scene_model_path = [] {
+  const char *configured_path = std::getenv("ODC_SCENE_XML");
+  return configured_path != nullptr ? std::string(configured_path)
+                                    : std::string("../models/scene.xml");
+}();
+mjModel *mj_model = mj_loadXML(scene_model_path.c_str(), 0, error, 1000);
+mjData *mj_data = mj_model != nullptr ? mj_makeData(mj_model) : nullptr;
 
 namespace {
 double computeVelTrackError(const DataBus &robot_state) {
@@ -439,6 +444,11 @@ void applyMuJoCoLegInertiaScale(mjModel *model, mjData *data,
 } // namespace
 
 int main(int argc, char **argv) {
+  if (mj_model == nullptr || mj_data == nullptr) {
+    std::cerr << "Failed to load MuJoCo scene " << scene_model_path << ": "
+              << error << std::endl;
+    return 1;
+  }
   // Experiment selector. The user manually switches this flag.
   int8_t exp = static_cast<int8_t>(getEnvInt("ODC_EXP", 1));
   // exp = 1: leg mass fraction sweep
@@ -619,6 +629,20 @@ int main(int argc, char **argv) {
   const double gait_swing_time = getEnvDouble("ODC_TSWING", 0.45);
   const double gait_switch_force_threshold =
       getEnvDouble("ODC_GAIT_SWITCH_FORCE_THRESHOLD", 100.0);
+  StairTerrainProfile stair_terrain;
+  stair_terrain.enabled = getEnvBool("ODC_STAIR_MODE", false);
+  stair_terrain.first_riser_x =
+      getEnvDouble("ODC_STAIR_FIRST_RISER_X", 0.5);
+  stair_terrain.tread_depth =
+      getEnvDouble("ODC_STAIR_TREAD_DEPTH", 0.5);
+  stair_terrain.riser_height =
+      getEnvDouble("ODC_STAIR_RISER_HEIGHT", 0.05);
+  stair_terrain.max_height =
+      getEnvDouble("ODC_STAIR_MAX_HEIGHT", 1.4);
+  const bool use_stair_contact_preview =
+      stair_terrain.enabled && getEnvBool("ODC_STAIR_CONTACT_PREVIEW", true);
+  const double gait_min_touchdown_phase = getEnvDouble(
+      "ODC_GAIT_MIN_TOUCHDOWN_PHASE", 0.6);
   const double torque_limit_scale =
       getEnvDouble("ODC_TORQUE_LIMIT_SCALE", 1.0);
   const double walk_leg_pd_scale =
@@ -704,7 +728,10 @@ int main(int argc, char **argv) {
 	         "controller_mass,controller_leg_mass,fLz_touch,fRz_touch,"
          "fLz_contact_raw,fRz_contact_raw,fLz_contact,fRz_contact,"
 	         "fLz_xml_touch,fRz_xml_touch,FLest_z,FRest_z,fall_detected,"
-             "push_triggered,push_actual_start,recovery_steps,motion_state\n";
+             "push_triggered,push_actual_start,recovery_steps,motion_state,"
+             "stair_mode,terrain_height,base_height_ref,"
+             "swing_target_x,swing_target_y,swing_target_z,"
+             "left_foot_x,left_foot_z,right_foot_x,right_foot_z\n";
 
   fr_ff_file
       << "time,controller_label,exp_id,use_variable_inertia,use_tau_bias,"
@@ -754,10 +781,12 @@ int main(int argc, char **argv) {
   GaitScheduler gaitScheduler(gait_swing_time, mj_model->opt.timestep);
   gaitScheduler.useTouchSwitchForce = gait_switch_force_source != "estimate";
   gaitScheduler.FzThrehold = gait_switch_force_threshold;
+  gaitScheduler.minTouchdownPhase = gait_min_touchdown_phase;
   std::cout << "[GaitScheduler] tSwing=" << gait_swing_time
             << " switch_force_source="
             << (gaitScheduler.useTouchSwitchForce ? "touch" : "estimate")
             << " switch_force_threshold=" << gaitScheduler.FzThrehold
+            << " min_touchdown_phase=" << gaitScheduler.minTouchdownPhase
             << std::endl;
   if (use_leg_lambda_scale) {
     std::cout << "[LegScale] lambda=" << leg_lambda_scale << std::endl;
@@ -832,6 +861,10 @@ int main(int argc, char **argv) {
 
   const double stand_legLength = getEnvDouble("ODC_STAND_LEG_LENGTH", 1.05);
   const double foot_height = 0.07;
+  const double stair_foot_contact_offset = getEnvDouble(
+      "ODC_STAIR_FOOT_CONTACT_OFFSET", foot_height - 0.035);
+  const double stair_landing_margin =
+      getEnvDouble("ODC_STAIR_LANDING_MARGIN", 0.10);
   const int model_nv = kinDynSolver.model_nv;
   const double startSteppingTime = 2.0;
   const double startWalkingTime = 3.0;
@@ -848,7 +881,8 @@ int main(int argc, char **argv) {
   footPlacement.kp_vx = getEnvDouble("ODC_FOOT_KP_VX", 0.1);
   footPlacement.kp_vy = getEnvDouble("ODC_FOOT_KP_VY", 0.03);
   footPlacement.kp_wz = getEnvDouble("ODC_FOOT_KP_WZ", 0.03);
-  footPlacement.stepHeight = getEnvDouble("ODC_FOOT_STEP_HEIGHT", 0.205);
+  footPlacement.stepHeight = getEnvDouble(
+      "ODC_FOOT_STEP_HEIGHT", stair_terrain.enabled ? 0.30 : 0.205);
   footPlacement.xOff_L = getEnvDouble("ODC_FOOT_X_OFFSET_L", -0.01);
   footPlacement.yOff_L = getEnvDouble("ODC_FOOT_Y_OFFSET_L", 0.01);
   footPlacement.zOff_W = getEnvDouble("ODC_FOOT_Z_OFFSET_W", -0.035);
@@ -857,6 +891,13 @@ int main(int argc, char **argv) {
   footPlacement.firstStepLateralBiasScale = 0.25;
   footPlacement.firstStepHeightScale = 0.6;
   footPlacement.legLength = stand_legLength;
+  footPlacement.stairTerrain = stair_terrain;
+  footPlacement.stairFootContactOffset = stair_foot_contact_offset;
+  footPlacement.stairLandingMargin = stair_landing_margin;
+  RobotState.stair_terrain = stair_terrain;
+  RobotState.use_stair_contact_preview = use_stair_contact_preview;
+  RobotState.stair_nominal_base_height = stand_legLength + foot_height;
+  RobotState.stair_foot_contact_offset = stair_foot_contact_offset;
   std::cout << "[FootPlacement] kp_vx=" << footPlacement.kp_vx
             << " xOff_L=" << footPlacement.xOff_L
             << " lookahead_time="
@@ -864,6 +905,15 @@ int main(int argc, char **argv) {
                     ? footPlacement.lookaheadTime
                     : gait_swing_time)
             << " gait_tSwing=" << gait_swing_time << std::endl;
+  std::cout << "[Terrain] scene=" << scene_model_path
+            << " stair_mode=" << (stair_terrain.enabled ? 1 : 0)
+            << " first_riser_x=" << stair_terrain.first_riser_x
+            << " tread_depth=" << stair_terrain.tread_depth
+            << " riser_height=" << stair_terrain.riser_height
+            << " max_height=" << stair_terrain.max_height
+            << " landing_margin=" << stair_landing_margin
+            << " contact_preview=" << (use_stair_contact_preview ? 1 : 0)
+            << std::endl;
 
   mju_copy(mj_data->qpos, mj_model->key_qpos, mj_model->nq * 1);
 
@@ -1173,7 +1223,23 @@ int main(int argc, char **argv) {
         RobotState.motionState = DataBus::Stand;
       }
       jsInterp.step();
-      RobotState.js_pos_des(2) = stand_legLength + foot_height;
+      double stair_support_height = 0.0;
+      if (stair_terrain.enabled) {
+        const double left_height =
+            stair_terrain.stepHeightAt(RobotState.fe_l_pos_W(0));
+        const double right_height =
+            stair_terrain.stepHeightAt(RobotState.fe_r_pos_W(0));
+        if (RobotState.legState == DataBus::LSt) {
+          stair_support_height = left_height;
+        } else if (RobotState.legState == DataBus::RSt) {
+          stair_support_height = right_height;
+        } else {
+          stair_support_height = 0.5 * (left_height + right_height);
+        }
+      }
+      RobotState.stair_support_height = stair_support_height;
+      RobotState.js_pos_des(2) =
+          stand_legLength + foot_height + stair_support_height;
       jsInterp.dataBusWrite(RobotState);
 
       if (simTime >= startSteppingTime) {
@@ -1455,8 +1521,11 @@ int main(int argc, char **argv) {
         }
         const double fr_vel_track_error = computeVelTrackError(RobotState);
         const double fr_torso_angle_error = computeTorsoAngleError(RobotState);
-        const bool fr_fall_detected =
-            detectFall(RobotState, fallHeightThreshold, fallAngleThreshold);
+        const bool fr_fall_detected = detectFall(
+            RobotState,
+            fallHeightThreshold +
+                stair_terrain.stepHeightAt(RobotState.q(0)),
+            fallAngleThreshold);
 
         fr_ff_file << std::fixed << std::setprecision(6) << simTime << ","
                    << controller_label << "," << static_cast<int>(exp) << ","
@@ -1551,8 +1620,11 @@ int main(int argc, char **argv) {
 	          RobotState.wbc_FrRes.size() == RobotState.Fr_ff.size()
 	              ? (RobotState.wbc_FrRes - RobotState.Fr_ff).norm()
 	              : std::numeric_limits<double>::quiet_NaN();
-	      RobotState.fall_detected =
-	          detectFall(RobotState, fallHeightThreshold, fallAngleThreshold);
+	      RobotState.fall_detected = detectFall(
+	          RobotState,
+	          fallHeightThreshold +
+	              stair_terrain.stepHeightAt(RobotState.q(0)),
+	          fallAngleThreshold);
 
       logger.startNewLine();
       logger.recItermData("simTime", simTime);
@@ -1665,7 +1737,17 @@ int main(int argc, char **argv) {
                  << (RobotState.fall_detected ? 1 : 0) << ","
                  << (pushPhaseTriggered ? 1 : 0) << ","
                  << pushActualStartTime << "," << recoveryCompletedSteps << ","
-                 << static_cast<int>(RobotState.motionState) << "\n";
+                 << static_cast<int>(RobotState.motionState) << ","
+                 << (stair_terrain.enabled ? 1 : 0) << ","
+                 << stair_terrain.stepHeightAt(RobotState.q(0)) << ","
+                 << RobotState.js_pos_des(2) << ","
+                 << RobotState.swingDesPosFinal_W(0) << ","
+                 << RobotState.swingDesPosFinal_W(1) << ","
+                 << RobotState.swingDesPosFinal_W(2) << ","
+                 << RobotState.fe_l_pos_W(0) << ","
+                 << RobotState.fe_l_pos_W(2) << ","
+                 << RobotState.fe_r_pos_W(0) << ","
+                 << RobotState.fe_r_pos_W(2) << "\n";
 
       if (snapshot_enabled && snapshot_index < snapshot_count &&
           simTime + 0.5 * mj_model->opt.timestep >= next_snapshot_time) {

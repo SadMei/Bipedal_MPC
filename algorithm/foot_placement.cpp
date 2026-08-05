@@ -95,8 +95,20 @@ void FootPlacement::getSwingPos() {
 	posDes_Ideal(0)+= xOff_W;
 	posDes_Ideal(1)+= yOff_W;
 
-	// 初始高度设为地面以下 (接触高度)
-	posDes_Ideal(2) = base_pos(2) - legLength + zOff_W;
+	if (stairTerrain.enabled) {
+		if (!stairTargetInitialized || stairTargetStepCount != stepCount) {
+			stairTargetIndex = stairTerrain.forwardLandingStepIndex(
+				posDes_Ideal(0), stairLandingMargin);
+			stairTargetStepCount = stepCount;
+			stairTargetInitialized = true;
+		}
+		posDes_Ideal(0) = stairTerrain.safeLandingX(
+			posDes_Ideal(0), stairTargetIndex, stairLandingMargin);
+		posDes_Ideal(2) = stairTerrain.stepHeightForIndex(stairTargetIndex) +
+			stairFootContactOffset;
+	} else {
+		posDes_Ideal(2) = base_pos(2) - legLength + zOff_W;
+	}
 
 	// =================================================================
 	// 步骤 2: 迭代求解耦合问题 (Coupling Solver)

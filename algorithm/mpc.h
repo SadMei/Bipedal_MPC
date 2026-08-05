@@ -90,6 +90,8 @@ private:
   Eigen::Matrix<double, 3, 1> pCoM;
   Eigen::Matrix<double, 6, 1> pf2com, pf2comd, pe;
   Eigen::Matrix<double, 6, 1> pf2comi[mpc_N];
+  bool use_stair_contact_preview{false};
+  Eigen::Vector3d swing_touchdown_position{Eigen::Vector3d::Zero()};
 
   // Modified: 使用全身质心转动惯量 Ig 替代固定的 Ic
   Eigen::Matrix<double, 3, 3> nominal_Ig;

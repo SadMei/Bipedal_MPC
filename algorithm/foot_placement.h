@@ -23,6 +23,9 @@ class FootPlacement {
 		double lookaheadTime{-1.0};
 		double firstStepLateralBiasScale{0.25};
 		double firstStepHeightScale{0.6};
+		StairTerrainProfile stairTerrain;
+		double stairFootContactOffset{0.0};
+		double stairLandingMargin{0.10};
 		double phi{0};    // phase varialbe for trajectory generation, must between 0 and 1
 		double tSwing{0.4}; // swing time
 
@@ -71,5 +74,8 @@ class FootPlacement {
 	double hip_width;
 
 		uint8_t printcounter = 0;
-		uint32_t stepCount{0};
+	uint32_t stepCount{0};
+	bool stairTargetInitialized{false};
+	uint32_t stairTargetStepCount{0};
+	int stairTargetIndex{0};
 	};
