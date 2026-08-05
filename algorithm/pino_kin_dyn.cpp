@@ -40,6 +40,7 @@ Pin_KinDyn::Pin_KinDyn(std::string urdf_pathIn) {
   tau_non_com.setZero();
   tau_non_idot_omega.setZero();
   tau_non_gyro.setZero();
+  h_rel.setZero();
   dyn_M = Eigen::MatrixXd::Zero(model_nv, model_nv);
   dyn_M_inv = Eigen::MatrixXd::Zero(model_nv, model_nv);
   dyn_C = Eigen::MatrixXd::Zero(model_nv, model_nv);
@@ -235,8 +236,36 @@ void Pin_KinDyn::dataBusWrite(DataBus &robotState) {
   robotState.tau_non_com = tau_non_com;
   robotState.tau_non_idot_omega = tau_non_idot_omega;
   robotState.tau_non_gyro = tau_non_gyro;
+  robotState.h_rel = h_rel;
   robotState.controller_mass = controller_mass;
   robotState.controller_leg_mass = controller_leg_mass;
+}
+
+void Pin_KinDyn::computeCentroidalInertiaHorizon(DataBus &robotState,
+                                                 int node_count,
+                                                 double node_dt) {
+  robotState.inertia_horizon.clear();
+  if (node_count <= 0 || node_dt < 0.0) {
+    return;
+  }
+
+  // Local 50 ms preview: roll the measured generalized velocity forward on
+  // the configuration manifold, then recompute I_G(q) at every MPC node.
+  robotState.inertia_horizon.reserve(static_cast<size_t>(node_count));
+  for (int node = 0; node < node_count; ++node) {
+    const Eigen::VectorXd q_node =
+        pinocchio::integrate(model_biped, q, node * node_dt * dq);
+    pinocchio::ccrba(model_biped, data_biped_inertia_fd, q_node, dq);
+    Eigen::Matrix3d inertia_node =
+        data_biped_inertia_fd.Ig.inertia().matrix();
+    inertia_node = 0.5 * (inertia_node + inertia_node.transpose());
+    if (!inertia_node.allFinite() ||
+        Eigen::LLT<Eigen::Matrix3d>(inertia_node).info() != Eigen::Success) {
+      robotState.inertia_horizon.clear();
+      return;
+    }
+    robotState.inertia_horizon.push_back(inertia_node);
+  }
 }
 
 // update jacobians and joint positions
@@ -409,6 +438,8 @@ void Pin_KinDyn::computeDyn() {
   // rows: angular
   pinocchio::dccrba(model_biped, data_biped, q, dq);
   pinocchio::computeCentroidalMomentum(model_biped, data_biped, q, dq);
+  const Eigen::Vector3d centroidal_angular_momentum =
+      data_biped.hg.angular();
   dyn_Ag = data_biped.Ag;
   dyn_dAg = data_biped.dAg;
 
@@ -465,6 +496,7 @@ void Pin_KinDyn::computeDyn() {
   // Pinocchio. Convert it back to world coordinates to match data_biped.Ig.
   const Eigen::Vector3d omega_world = base_rot * dq.block<3, 1>(3, 0);
   const Eigen::Vector3d angular_momentum = inertia * omega_world;
+  h_rel = centroidal_angular_momentum - angular_momentum;
   tau_non_idot_omega = inertia_dot * omega_world;
   tau_non_gyro = omega_world.cross(angular_momentum);
   tau_non_com = tau_non_idot_omega;

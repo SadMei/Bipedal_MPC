@@ -177,6 +177,27 @@ doc/doxygen/xml/cmake-build-release_2CMakeFiles_2wbc__speed__test_8dir_2link_8tx
 
 .idea/
 
+.vscode/
+
 build/
 
 record/datalog.log
+
+# Simulation and experiment outputs are local artifacts.
+record/*
+!record/exportVideo.txt
+!record/matlabReadDataScript.txt
+!record/plotData.m
+figures/experiment_data/
+
+# Generated Python cache files.
+**/__pycache__/
+*.py[cod]
+
+# Generated logs and LaTeX intermediate files.
+*.log
+*.aux
+*.fdb_latexmk
+*.fls
+*.xdv
+*.synctex.gz

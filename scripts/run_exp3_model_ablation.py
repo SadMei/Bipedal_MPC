@@ -152,7 +152,7 @@ def plot_ablation(out_dir: Path, rows: list[dict[str, object]]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lambda-scale", type=float, default=1.7)
-    parser.add_argument("--wz-amp", type=float, default=0.25)
+    parser.add_argument("--wz-amp", type=float, default=0.4)
     parser.add_argument("--wz-period", type=float, default=4.0)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--controllers", default="srbm,vicm_ig,vicm_ac")

@@ -63,6 +63,8 @@ class TrialResult:
     wbc_qp_fail_frames: int
     rms_wz_err: float
     max_abs_wz_err: float
+    rms_vx_err: float
+    max_abs_vx_err: float
     rms_yaw_err: float
     max_abs_yaw_err: float
     rms_srbm_pred_err: float
@@ -101,6 +103,7 @@ def parse_trial(
     fall_time = final_time if fall else sim_end
     eval_rows = [r for r in rows if float(r["time"]) >= 4.0]
     wz_err = [float(r["wz"]) - float(r["wz_ref"]) for r in eval_rows]
+    vx_err = [float(r["vx"]) - float(r["vx_ref"]) for r in eval_rows]
     yaw_err = [float(r["yaw"]) - float(r["yaw_ref"]) for r in eval_rows]
     mpc_qp_fail_frames = sum(
         1 for row in rows if int(float(row.get("mpc_qp_status", "0"))) != 0
@@ -148,6 +151,8 @@ def parse_trial(
         wbc_qp_fail_frames=wbc_qp_fail_frames,
         rms_wz_err=rms(wz_err),
         max_abs_wz_err=max((abs(v) for v in wz_err), default=math.nan),
+        rms_vx_err=rms(vx_err),
+        max_abs_vx_err=max((abs(v) for v in vx_err), default=math.nan),
         rms_yaw_err=rms(yaw_err),
         max_abs_yaw_err=max((abs(v) for v in yaw_err), default=math.nan),
         rms_srbm_pred_err=rms(srbm_pred_err),
@@ -212,6 +217,7 @@ def summarize(results: list[TrialResult]) -> list[dict[str, object]]:
     for (lambda_scale, controller), group in sorted(groups.items()):
         times = [g.final_time for g in group]
         wz = [g.rms_wz_err for g in group]
+        vx = [g.rms_vx_err for g in group]
         yaw = [g.rms_yaw_err for g in group]
         pred_s = [g.rms_srbm_pred_err for g in group]
         pred_v = [g.rms_vicm_pred_err for g in group]
@@ -226,6 +232,7 @@ def summarize(results: list[TrialResult]) -> list[dict[str, object]]:
                 "min_final_time": min(times),
                 "max_final_time": max(times),
                 "mean_rms_wz_err": mean(wz),
+                "mean_rms_vx_err": mean(vx),
                 "mean_rms_yaw_err": mean(yaw),
                 "mean_rms_srbm_pred_err": mean(pred_s),
                 "mean_rms_vicm_pred_err": mean(pred_v),
@@ -309,6 +316,8 @@ def run_trial(
 ) -> TrialResult:
     uncertainty = trial_uncertainty_profile(rep, args)
     variant = ""
+    if controller == "vicm" and args.discrete_momentum:
+        variant += "_discrete"
     if controller == "vicm" and args.predict_ig_linear:
         variant += "_igpred"
     if args.wrench_rate_weight > 0.0:
@@ -334,7 +343,17 @@ def run_trial(
             "ODC_PREDICT_IG_LINEAR": (
                 "1" if controller == "vicm" and args.predict_ig_linear else "0"
             ),
-            "ODC_LINEAR_TAU_DYNAMICS": "1" if controller == "vicm" else "0",
+            "ODC_LINEAR_TAU_DYNAMICS": (
+                "1"
+                if controller == "vicm" and not args.discrete_momentum
+                else "0"
+            ),
+            "ODC_DISCRETE_MOMENTUM_DYNAMICS": (
+                "1"
+                if controller == "vicm" and args.discrete_momentum
+                else "0"
+            ),
+            "ODC_DISCRETE_MOMENTUM_Q_PREVIEW": "1",
             "ODC_MPC_WRENCH_RATE_WEIGHT": f"{args.wrench_rate_weight:.12g}",
             "ODC_MPC_L_DIAG": args.mpc_l_diag,
             "ODC_TORQUE_LIMIT_SCALE": f"{args.torque_limit_scale:.12g}",
@@ -407,6 +426,11 @@ def run_trial(
     if pred_src.exists():
         shutil.copyfile(pred_src, pred_dst)
 
+    horizon_src = RECORD_DIR / f"mpc_horizon_exp1_{case}_lf0.500000.csv"
+    horizon_dst = out_dir / f"{case}_mpc_horizon.csv"
+    if horizon_src.exists():
+        shutil.copyfile(horizon_src, horizon_dst)
+
     return parse_trial(
         case,
         controller,
@@ -427,6 +451,10 @@ def main() -> int:
     parser.add_argument("--start", type=float, default=0.5)
     parser.add_argument("--step", type=float, default=0.1)
     parser.add_argument("--max-lambda", type=float, default=2.4)
+    parser.add_argument(
+        "--lambda-values",
+        help="Optional space/comma-separated lambda values in execution order.",
+    )
     parser.add_argument("--rep-start", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--sim-end", type=float, default=30.0)
@@ -438,8 +466,9 @@ def main() -> int:
     parser.add_argument("--tau-non-norm-limit", type=float, default=0.0)
     parser.add_argument("--ig-dot-filter-tau", type=float, default=0.01)
     parser.add_argument("--predict-ig-linear", action="store_true")
+    parser.add_argument("--discrete-momentum", action="store_true")
     parser.add_argument("--wrench-rate-weight", type=float, default=0.0)
-    parser.add_argument("--sine-wz-amp", type=float, default=0.25)
+    parser.add_argument("--sine-wz-amp", type=float, default=0.4)
     parser.add_argument("--sine-wz-period", type=float, default=4.0)
     parser.add_argument("--sine-wz-start", type=float, default=4.0)
     parser.add_argument("--torque-limit-scale", type=float, default=1.2)
@@ -494,6 +523,7 @@ def main() -> int:
         "tau_non_norm_limit": args.tau_non_norm_limit,
         "ig_dot_filter_tau": args.ig_dot_filter_tau,
         "predict_ig_linear": args.predict_ig_linear,
+        "discrete_momentum": args.discrete_momentum,
         "wrench_rate_weight": args.wrench_rate_weight,
         "wbc_delta_fr_weight": "default_1e1",
         "wbc_delta_ddq_weight": "default_1e7",
@@ -548,8 +578,19 @@ def main() -> int:
         if args.resume_dir is None:
             writer.writeheader()
 
-        lambda_scale = args.start
-        while lambda_scale <= args.max_lambda + 1e-9:
+        if args.lambda_values:
+            lambda_values = [
+                float(value)
+                for value in args.lambda_values.replace(",", " ").split()
+            ]
+        else:
+            lambda_values = []
+            lambda_scale = args.start
+            while lambda_scale <= args.max_lambda + 1e-9:
+                lambda_values.append(round(lambda_scale, 10))
+                lambda_scale = round(lambda_scale + args.step, 10)
+
+        for lambda_scale in lambda_values:
             lambda_scale = round(lambda_scale, 10)
             print(f"=== VICM lambda={lambda_scale:.3f} ===", flush=True)
             current = [
@@ -591,7 +632,6 @@ def main() -> int:
                     flush=True,
                 )
                 break
-            lambda_scale = round(lambda_scale + args.step, 10)
 
         if not args.skip_srbm:
             print("=== SRBM over completed lambda values ===", flush=True)

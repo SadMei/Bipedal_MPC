@@ -27,10 +27,28 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "figures" / "manuscript_current"
 
 EXP1_DIR = ROOT / "record" / "lambda_filter_turn_exp1_20260722_232307"
+EXP1_FINAL_SUMMARY = (
+    ROOT
+    / "record"
+    / "lambda_filter_turn_exp1_20260729_153733"
+    / "full_model_comparison"
+    / "full_model_summary.csv"
+)
+EXP1_PAIRED_SUMMARY = (
+    ROOT
+    / "record"
+    / "lambda_filter_turn_exp1_20260729_093310"
+    / "paired_common_window_summary.csv"
+)
 EXP1_RETRY_DIRS: dict[float, Path] = {}
 EXP3_DIR = ROOT / "record" / "exp3_model_ablation_lam1p8_20260722_211126"
 EXP3_NF_RETRY_DIR = EXP3_DIR
-EXP4_DIR = ROOT / "record" / "exp4_push_recovery_lam1p7_20260611_224747"
+EXP2_FINAL_DIR = (
+    ROOT / "record" / "exp2_final_ablation_lam1p8_assembled_20260802"
+)
+EXP4_DIR = (
+    ROOT / "record" / "exp4_push_recovery_lam1p7_20260611_224747"
+)
 
 INK = "#1F2430"
 MUTED = "#6F768A"
@@ -57,6 +75,7 @@ MODEL_COLORS = {
     "VICM-NF": PINK,
     "VICM-Ac no filter": PINK,
     "VICM affine tau": GOLD,
+    "DM-CMPC": PINK,
 }
 
 
@@ -232,115 +251,74 @@ def add_top_brace(
     )
 
 
-def plot_exp1_survival() -> None:
-    rows = read_rows(EXP1_DIR / "summary.csv")
-    for lam, retry_dir in EXP1_RETRY_DIRS.items():
-        rows = [row for row in rows if not math.isclose(fval(row, "lambda_scale"), lam)]
-        rows.extend(read_rows(retry_dir / "summary.csv"))
-    grouped: dict[str, list[tuple[float, float, float]]] = defaultdict(list)
+def plot_exp1_tracking_sweep() -> None:
+    rows = read_rows(EXP1_PAIRED_SUMMARY)
+    grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
     for row in rows:
-        lam = fval(row, "lambda_scale")
-        if lam < 1.0:
-            continue
-        ctrl = "SRBM" if row["controller"] == "srbm" else "VICM"
-        grouped[ctrl].append(
-            (lam, fval(row, "mean_final_time"), fval(row, "std_final_time", 0.0))
-        )
+        if (
+            row["model"] in {"SRBM", "IR-CMPC"}
+            and fval(row, "lambda_scale") <= 2.2
+        ):
+            grouped[row["model"]].append(row)
 
-    fig, ax = plt.subplots(figsize=(3.45, 2.55))
-
-    regions = [
-        (0.98, 1.75, r"(a) Low/mid", "#EEF1F6"),
-        (1.75, 2.05, r"(b) Advantage", "#E8F0FA"),
-        (2.05, 2.32, r"(c) High", "#EEF1F6"),
+    fig, axes = plt.subplots(1, 3, figsize=(7.1, 2.25), sharex=True)
+    styles = {
+        "SRBM": (SRBM, "o", "-", "SRBM"),
+        "IR-CMPC": (VICM, "s", "--", VICM_LABEL),
+    }
+    metrics = [
+        (
+            "mean_h10_wz_prediction_rmse",
+            "sd_h10_wz_prediction_rmse",
+            "10-step " + r"$\omega_z$" + " pred. RMSE [rad/s]",
+        ),
+        (
+            "mean_vx_tracking_rmse",
+            "sd_vx_tracking_rmse",
+            r"$v_x$ tracking RMSE [m/s]",
+        ),
+        (
+            "mean_wz_tracking_rmse",
+            "sd_wz_tracking_rmse",
+            r"$\omega_z$ tracking RMSE [rad/s]",
+        ),
     ]
-    for x0, x1, _, color in regions:
-        ax.axvspan(x0, x1, color=color, alpha=0.55, zorder=0)
-    for x in [1.75, 2.05]:
-        ax.axvline(x, color=AXIS, linewidth=0.6, linestyle="--", zorder=1)
 
-    for ctrl, marker, linestyle in [("SRBM", "o", "-"), ("VICM", "s", "--")]:
-        pts = sorted(grouped[ctrl])
-        x = np.asarray([p[0] for p in pts])
-        y = np.asarray([p[1] for p in pts])
-        yerr = np.asarray([p[2] for p in pts])
-        ax.errorbar(
-            x,
-            y,
-            yerr=yerr,
-            color=MODEL_COLORS[ctrl],
-            marker=marker,
-            linestyle=linestyle,
-            linewidth=1.25,
-            markersize=3.2,
-            elinewidth=0.75,
-            capsize=2.0,
-            capthick=0.75,
-            zorder=4,
-            label=VICM_LABEL if ctrl == "VICM" else ctrl,
-        )
+    for ax, (mean_key, sd_key, ylabel), panel in zip(
+        axes, metrics, ["(a)", "(b)", "(c)"]
+    ):
+        for model in ["SRBM", "IR-CMPC"]:
+            pts = sorted(grouped[model], key=lambda row: fval(row, "lambda_scale"))
+            x = np.asarray([fval(row, "lambda_scale") for row in pts])
+            y = np.asarray([fval(row, mean_key) for row in pts])
+            yerr = np.asarray([fval(row, sd_key, 0.0) for row in pts])
+            color, marker, linestyle, label = styles[model]
+            lower = np.maximum(0.0, y - yerr)
+            upper = y + yerr
+            ax.fill_between(x, lower, upper, color=color, alpha=0.13, linewidth=0)
+            ax.plot(
+                x,
+                y,
+                color=color,
+                marker=marker,
+                linestyle=linestyle,
+                linewidth=1.2,
+                markersize=3.0,
+                zorder=3,
+                label=label,
+            )
+        ax.set_ylabel(ylabel)
+        ax.set_xlim(0.98, 2.22)
+        clean_axes(ax)
+        panel_label(ax, panel, x=0.0, y=1.10)
 
-    ax.axhline(30.0, color=REF, linewidth=0.8, linestyle=":")
-    ax.text(
-        2.30,
-        28.45,
-        "30 s limit",
-        ha="right",
-        va="top",
-        fontsize=6.6,
-        color=REF,
-        bbox={"facecolor": "white", "edgecolor": "none", "pad": 0.8, "alpha": 0.78},
-    )
-    for x0, x1, label, _ in regions:
-        add_top_brace(ax, x0 + 0.02, x1 - 0.02, 31.2, 0.42, label)
-
-    mass_note = (
-        r"$M_b^0=47.48$ kg" "\n"
-        r"$M_\ell^0=29.87$ kg" "\n"
-        r"$M_\ell(\lambda)=\lambda M_\ell^0$"
-    )
-    ax.text(
-        1.03,
-        2.7,
-        mass_note,
-        ha="left",
-        va="bottom",
-        fontsize=6.5,
-        color=INK,
-        bbox={
-            "facecolor": "white",
-            "edgecolor": AXIS,
-            "linewidth": 0.45,
-            "pad": 2.0,
-            "alpha": 0.86,
-        },
-    )
-    ax.text(
-        1.90,
-        4.7,
-        "IR-CMPC\nadvantage window",
-        ha="center",
-        va="center",
-        fontsize=6.8,
-        color=MODEL_COLORS["VICM"],
-        fontweight="semibold",
-        bbox={
-            "facecolor": "white",
-            "edgecolor": MODEL_COLORS["VICM"],
-            "linewidth": 0.55,
-            "pad": 2.0,
-            "alpha": 0.82,
-        },
-        zorder=5,
-    )
-    ax.set_xlabel(r"Leg inertia scale $\lambda$")
-    ax.set_ylabel("Survival time [s]")
-    ax.set_xlim(0.98, 2.32)
-    ax.set_ylim(0.0, 33.0)
-    ax.set_xticks(np.arange(1.0, 2.31, 0.2))
-    clean_axes(ax)
-    ax.legend(loc="lower left", bbox_to_anchor=(0.02, 0.32), frameon=False, ncol=1, handlelength=2.2)
-    save(fig, OUT_DIR / "exp1_lambda_turning_survival.png")
+    axes[0].legend(loc="upper left", frameon=False, ncol=1, handlelength=1.7)
+    for ax in axes:
+        ax.set_xlabel(r"Scale $\lambda$")
+    for ax in axes:
+        ax.set_xticks([1.0, 1.4, 1.8, 2.2])
+    fig.subplots_adjust(wspace=0.34)
+    save(fig, OUT_DIR / "exp1_lambda_tracking_rmse.png")
 
 
 def plot_exp1_tracking() -> None:
@@ -454,108 +432,114 @@ def plot_exp1_tracking() -> None:
 
 
 def plot_exp3_ablation() -> None:
-    rows = read_rows(EXP3_DIR / "summary.csv")
-    by_label = {row["controller_label"]: row for row in rows}
-    label_map = [
-        ("SRBM", "SRBM"),
-        ("VICM-Ig", "VI-CMPC"),
-        ("VICM-Ac", VICM_LABEL),
-        ("VICM-Ac no filter", "IR-CMPC-NF"),
-    ]
-    pairs = [(raw, shown) for raw, shown in label_map if raw in by_label]
-    labels = [shown for _, shown in pairs]
-
-    specs = [
-        ("mean_final_time", "Survival time [s]", "(a)", (0, 32)),
-        ("mean_rms_wz_err", r"RMS error of $\omega_z$ [rad/s]", "(b)", None),
-    ]
-
-    fig, axes = plt.subplots(3, 1, figsize=(3.45, 4.75))
+    rows = read_rows(EXP2_FINAL_DIR / "summary.csv")
+    rows_by_label = {row["controller_label"]: row for row in rows}
+    model_order = ["SRBM", "IR-CMPC", "VI-CMPC"]
+    rows = [rows_by_label[label] for label in model_order]
+    shown_labels = {
+        "SRBM": "SRBM",
+        "VI-CMPC": "VI-CMPC",
+        "IR-CMPC": VICM_LABEL,
+    }
+    labels = [shown_labels[row["controller_label"]] for row in rows]
     y = np.arange(len(labels))
-    for idx, (ax, (field, xlabel, label, xlim)) in enumerate(zip(axes[:2], specs)):
-        vals = [fval(by_label[raw], field) for raw, _ in pairs]
-        err_field = field.replace("mean_", "std_", 1)
-        errs = [fval(by_label[raw], err_field, 0.0) for raw, _ in pairs]
-        colors = [MODEL_COLORS.get(item, NEUTRAL) for item in labels]
-        ax.barh(y, vals, xerr=errs, color=colors, edgecolor="white", linewidth=0.5, height=0.68)
+    colors = [MODEL_COLORS.get(label, NEUTRAL) for label in labels]
+    fig, axes = plt.subplots(3, 1, figsize=(3.45, 4.5))
+
+    metrics = [
+        (
+            "mean_survival_time",
+            "sample_sd_survival_time",
+            "Survival time [s]",
+            "(a)",
+            (0.0, 35.0),
+        ),
+        (
+            "mean_h10_wz_prediction_rmse",
+            "sample_sd_h10_wz_prediction_rmse",
+            r"10-step $\omega_z$ prediction RMSE [rad/s]",
+            "(b)",
+            (0.0, 1.38),
+        ),
+    ]
+    for ax, (mean_key, sd_key, xlabel, panel, xlim) in zip(axes[:2], metrics):
+        values = [fval(row, mean_key) for row in rows]
+        errors = [fval(row, sd_key, 0.0) for row in rows]
+        bar_kwargs = {
+            "color": colors,
+            "edgecolor": "white",
+            "linewidth": 0.5,
+            "height": 0.66,
+        }
+        if max(errors, default=0.0) > 1.0e-4:
+            bar_kwargs["xerr"] = errors
+            bar_kwargs["error_kw"] = {
+                "elinewidth": 0.7,
+                "capsize": 2.0,
+                "capthick": 0.7,
+            }
+        ax.barh(y, values, **bar_kwargs)
         ax.set_yticks(y)
         ax.set_yticklabels(labels)
         ax.invert_yaxis()
-        ax.set_xlabel(xlabel, labelpad=8)
-        panel_label(ax, label)
-        if xlim is not None:
-            ax.set_xlim(*xlim)
-        else:
-            ax.set_xlim(0.0, max(value + error for value, error in zip(vals, errs)) * 1.28)
-        if idx == 1 and "SRBM" in labels and VICM_LABEL in labels:
-            srbm_value = vals[labels.index("SRBM")]
-            vicm_index = labels.index(VICM_LABEL)
-            vicm_value = vals[vicm_index]
-            reduction = 100.0 * (srbm_value - vicm_value) / srbm_value
-            comparison = (
-                f"{reduction:.1f}% lower"
-                if reduction >= 0.0
-                else f"{abs(reduction):.1f}% higher"
-            )
-            ax.annotate(
-                comparison,
-                xy=(vicm_value + errs[vicm_index], y[vicm_index]),
-                xytext=(3, 0),
-                textcoords="offset points",
-                ha="left",
-                va="center",
-                fontsize=6.4,
-                color=MODEL_COLORS[VICM_LABEL],
-                fontweight="semibold",
-            )
-        if idx == 0:
-            ax.set_ylim(len(labels) - 0.5, -0.95)
-            ax.text(
-                31.6,
-                -0.62,
-                r"$\lambda=1.8$",
-                ha="right",
-                va="center",
-                fontsize=7,
-                color=INK,
-            )
+        ax.set_xlim(*xlim)
+        ax.set_xlabel(xlabel, labelpad=7)
+        panel_label(ax, panel, x=-0.10, y=1.08)
         clean_axes(ax, grid_axis="x")
+        ir_index = model_order.index("IR-CMPC")
+        relative_change = 100.0 * (values[ir_index] - values[0]) / values[0]
+        direction = "higher" if relative_change >= 0.0 else "lower"
+        ax.annotate(
+            f"{abs(relative_change):.1f}% {direction}",
+            xy=(values[ir_index], y[ir_index]),
+            xytext=(3, 0),
+            textcoords="offset points",
+            ha="left",
+            va="center",
+            fontsize=6.2,
+            color=MODEL_COLORS[VICM_LABEL],
+            fontweight="semibold",
+        )
 
-    trial_rows = read_rows(EXP3_DIR / "trials.csv")
-    prediction_specs = [
-        ("rms_srbm_pred_err", "SRBM"),
-        ("rms_vi_pred_err", "VI-CMPC"),
-        ("rms_ir_pred_err", VICM_LABEL),
-        ("rms_ir_nf_pred_err", "IR-CMPC-NF"),
-    ]
-    pred_values = []
-    pred_errors = []
-    pred_labels = []
-    for field, label in prediction_specs:
-        samples = np.asarray([fval(row, field) for row in trial_rows], dtype=float)
-        samples = samples[np.isfinite(samples)]
-        pred_values.append(float(np.mean(samples)))
-        pred_errors.append(float(np.std(samples)))
-        pred_labels.append(label)
+    axes[0].axvline(30.0, color=REF, linewidth=0.8, linestyle=":")
+    axes[0].text(
+        34.5,
+        -0.58,
+        r"$\lambda=1.8$",
+        ha="right",
+        va="center",
+        fontsize=6.8,
+        color=INK,
+    )
+
     ax = axes[2]
-    pred_y = np.arange(len(pred_labels))
+    mean_time = np.asarray([fval(row, "mean_mpc_wall_ms") for row in rows])
     ax.barh(
-        pred_y,
-        pred_values,
-        xerr=pred_errors,
-        color=[MODEL_COLORS.get(item, NEUTRAL) for item in pred_labels],
+        y,
+        mean_time,
+        height=0.66,
+        color=colors,
         edgecolor="white",
         linewidth=0.5,
-        height=0.68,
     )
-    ax.set_yticks(pred_y)
-    ax.set_yticklabels(pred_labels)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
     ax.invert_yaxis()
-    ax.set_xlim(0.0, max(v + e for v, e in zip(pred_values, pred_errors)) * 1.18)
-    ax.set_xlabel(r"One-step RMS error of $\omega$ [rad/s]", labelpad=8)
-    panel_label(ax, "(c)")
+    ax.set_xlim(0.0, 2.25)
+    ax.set_xlabel("Mean MPC update time [ms]", labelpad=7)
+    panel_label(ax, "(c)", x=-0.10, y=1.08)
     clean_axes(ax, grid_axis="x")
-    fig.subplots_adjust(hspace=0.70)
+    ax.axvline(2.0, color=REF, linewidth=0.8, linestyle=":")
+    ax.text(
+        1.97,
+        -0.58,
+        "All means < 2 ms",
+        ha="right",
+        va="center",
+        fontsize=6.4,
+        color=INK,
+    )
+    fig.subplots_adjust(hspace=0.72)
     save(fig, OUT_DIR / "exp3_model_ablation_summary.png")
 
 
@@ -895,7 +879,7 @@ def plot_exp4_lateral_response() -> None:
 
 def main() -> None:
     set_ieee_style()
-    plot_exp1_survival()
+    plot_exp1_tracking_sweep()
     plot_exp1_tracking()
     plot_exp3_ablation()
     plot_exp4_binary_recovery_and_boundary()

@@ -290,3 +290,8 @@ void WBC_priority::computeDdq(Pin_KinDyn &pinKinDynIn){
 
 ```
 
+fig7 图ab在times外面
+velocity  walking
+fig78 补全子图解释
+子图标题写在里面吗 不写 abcd在左上角
+fig8 error 要有rad/s one step error of w

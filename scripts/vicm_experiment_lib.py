@@ -21,6 +21,7 @@ RECORD_DIR = REPO_ROOT / "record"
 FIGURE_DIR = REPO_ROOT / "figures"
 
 MPC_L_DIAG_MAIN = "50 50 80 1 200 1 1 1 10 100 10 1"
+HREL_DOT_FILTER_TAU_DEFAULT = 0.02
 
 LIGHT_NOISE_DEFAULTS = {
     "noise_base_pos_std": 5.0e-4,
@@ -38,6 +39,11 @@ CONTROLLER_LABELS = {
     "vicm_ac": "VICM-Ac",
     "vicm_ac_nofilter": "VICM-Ac no filter",
     "vicm_affine": "VICM affine tau",
+    "ir_cmpc": "IR-CMPC",
+    "ir_cmpc_hrel": "IRM-CMPC",
+    "ir_cmpc_rolling": "IR-CMPC-RC",
+    "dm_frozen": "DM-CMPC-FI",
+    "dm_preview": "DM-CMPC",
 }
 
 
@@ -174,12 +180,21 @@ def controller_env(
     variant: str,
     ig_dot_filter_tau: float,
     tau_non_norm_limit: float,
+    hrel_dot_filter_tau: float | None = None,
+    hrel_reset_on_contact_switch: bool = False,
 ) -> dict[str, str]:
+    hrel_tau = (
+        HREL_DOT_FILTER_TAU_DEFAULT
+        if hrel_dot_filter_tau is None
+        else hrel_dot_filter_tau
+    )
     if variant == "srbm":
         return {
             "ODC_USE_VICM": "0",
             "ODC_USE_TAU_BIAS": "0",
             "ODC_LINEAR_TAU_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_Q_PREVIEW": "0",
             "ODC_IG_DOT_FILTER_TAU": f"{ig_dot_filter_tau:.12g}",
             "ODC_TAU_NON_NORM_LIMIT": f"{tau_non_norm_limit:.12g}",
         }
@@ -188,6 +203,8 @@ def controller_env(
             "ODC_USE_VICM": "1",
             "ODC_USE_TAU_BIAS": "0",
             "ODC_LINEAR_TAU_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_Q_PREVIEW": "0",
             "ODC_IG_DOT_FILTER_TAU": f"{ig_dot_filter_tau:.12g}",
             "ODC_TAU_NON_NORM_LIMIT": f"{tau_non_norm_limit:.12g}",
         }
@@ -196,6 +213,8 @@ def controller_env(
             "ODC_USE_VICM": "1",
             "ODC_USE_TAU_BIAS": "1",
             "ODC_LINEAR_TAU_DYNAMICS": "1",
+            "ODC_DISCRETE_MOMENTUM_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_Q_PREVIEW": "0",
             "ODC_IG_DOT_FILTER_TAU": f"{ig_dot_filter_tau:.12g}",
             "ODC_TAU_NON_NORM_LIMIT": f"{tau_non_norm_limit:.12g}",
         }
@@ -204,6 +223,8 @@ def controller_env(
             "ODC_USE_VICM": "1",
             "ODC_USE_TAU_BIAS": "1",
             "ODC_LINEAR_TAU_DYNAMICS": "1",
+            "ODC_DISCRETE_MOMENTUM_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_Q_PREVIEW": "0",
             "ODC_IG_DOT_FILTER_TAU": "0",
             "ODC_TAU_NON_NORM_LIMIT": f"{tau_non_norm_limit:.12g}",
         }
@@ -212,6 +233,67 @@ def controller_env(
             "ODC_USE_VICM": "1",
             "ODC_USE_TAU_BIAS": "1",
             "ODC_LINEAR_TAU_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_Q_PREVIEW": "0",
+            "ODC_IG_DOT_FILTER_TAU": f"{ig_dot_filter_tau:.12g}",
+            "ODC_TAU_NON_NORM_LIMIT": f"{tau_non_norm_limit:.12g}",
+        }
+    if variant == "ir_cmpc":
+        return {
+            "ODC_USE_VICM": "1",
+            "ODC_USE_TAU_BIAS": "1",
+            "ODC_LINEAR_TAU_DYNAMICS": "1",
+            "ODC_DISCRETE_MOMENTUM_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_Q_PREVIEW": "0",
+            "ODC_IG_DOT_FILTER_TAU": f"{ig_dot_filter_tau:.12g}",
+            "ODC_TAU_NON_NORM_LIMIT": f"{tau_non_norm_limit:.12g}",
+        }
+    if variant == "ir_cmpc_hrel":
+        return {
+            "ODC_USE_VICM": "1",
+            "ODC_USE_TAU_BIAS": "1",
+            "ODC_LINEAR_TAU_DYNAMICS": "1",
+            "ODC_DISCRETE_MOMENTUM_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_Q_PREVIEW": "0",
+            "ODC_USE_HREL_RATE": "1",
+            "ODC_HREL_DOT_FILTER_TAU": f"{hrel_tau:.12g}",
+            "ODC_HREL_RESET_ON_CONTACT_SWITCH": (
+                "1" if hrel_reset_on_contact_switch else "0"
+            ),
+            "ODC_IG_DOT_FILTER_TAU": f"{ig_dot_filter_tau:.12g}",
+            "ODC_TAU_NON_NORM_LIMIT": f"{tau_non_norm_limit:.12g}",
+        }
+    if variant == "ir_cmpc_rolling":
+        return {
+            "ODC_USE_VICM": "1",
+            "ODC_USE_TAU_BIAS": "1",
+            "ODC_LINEAR_TAU_DYNAMICS": "1",
+            "ODC_DISCRETE_MOMENTUM_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_Q_PREVIEW": "0",
+            "ODC_IRCMPC_ROLLING_INERTIA": "1",
+            "ODC_PREDICT_IG_LINEAR": "0",
+            "ODC_IG_DOT_FILTER_TAU": f"{ig_dot_filter_tau:.12g}",
+            "ODC_TAU_NON_NORM_LIMIT": f"{tau_non_norm_limit:.12g}",
+        }
+    if variant == "dm_frozen":
+        return {
+            "ODC_USE_VICM": "1",
+            "ODC_USE_TAU_BIAS": "0",
+            "ODC_LINEAR_TAU_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_DYNAMICS": "1",
+            "ODC_DISCRETE_MOMENTUM_Q_PREVIEW": "0",
+            "ODC_PREDICT_IG_LINEAR": "0",
+            "ODC_IG_DOT_FILTER_TAU": f"{ig_dot_filter_tau:.12g}",
+            "ODC_TAU_NON_NORM_LIMIT": f"{tau_non_norm_limit:.12g}",
+        }
+    if variant == "dm_preview":
+        return {
+            "ODC_USE_VICM": "1",
+            "ODC_USE_TAU_BIAS": "0",
+            "ODC_LINEAR_TAU_DYNAMICS": "0",
+            "ODC_DISCRETE_MOMENTUM_DYNAMICS": "1",
+            "ODC_DISCRETE_MOMENTUM_Q_PREVIEW": "1",
+            "ODC_PREDICT_IG_LINEAR": "0",
             "ODC_IG_DOT_FILTER_TAU": f"{ig_dot_filter_tau:.12g}",
             "ODC_TAU_NON_NORM_LIMIT": f"{tau_non_norm_limit:.12g}",
         }
@@ -234,11 +316,13 @@ def make_env(
     mpc_l_diag: str,
     torque_limit_scale: float,
     walk_leg_pd_scale: float,
+    hrel_dot_filter_tau: float | None = None,
+    hrel_reset_on_contact_switch: bool = False,
     vy: float = 0.0,
     lambda_scale: float | None = None,
     leg_mass_fraction: float = 0.5,
     sine_turn: bool = True,
-    sine_wz_amp: float = 0.25,
+    sine_wz_amp: float = 0.4,
     sine_wz_period: float = 4.0,
     sine_wz_start: float = 4.0,
     push_force: float = 0.0,
@@ -249,6 +333,7 @@ def make_env(
     push_dir_z: float = 0.0,
     push_trigger_mode: str = "time",
     push_trigger_phi: float = 0.5,
+    push_recovery_stop_steps: int = 0,
     gait_switch_threshold: float = 100.0,
     foot_lookahead_time: float | None = None,
     wbc_delta_fr_weight: float | None = None,
@@ -271,6 +356,7 @@ def make_env(
             "ODC_HEADLESS": "1",
             "ODC_EXP": str(exp_id),
             "ODC_RUN_LABEL": case,
+            "ODC_ISOLATE_EXPERIMENT_OUTPUTS": "1",
             "ODC_USE_LEG_LAMBDA_SCALE": "1" if use_lambda else "0",
             "ODC_LEG_MASS_FRACTION": f"{leg_mass_fraction:.12g}",
             "ODC_TARGET_SPEED_X": f"{vx:.12g}",
@@ -281,6 +367,8 @@ def make_env(
             "ODC_SIM_END_TIME": f"{sim_end:.12g}",
             "ODC_TAU_BIAS_SCALE": f"{tau_bias_scale:.12g}",
             "ODC_PREDICT_IG_LINEAR": "0",
+            "ODC_USE_HREL_RATE": "0",
+            "ODC_HREL_DOT_FILTER_TAU": f"{ig_dot_filter_tau:.12g}",
             "ODC_MPC_L_DIAG": mpc_l_diag,
             "ODC_TORQUE_LIMIT_SCALE": f"{torque_limit_scale:.12g}",
             "ODC_WALK_LEG_PD_SCALE": f"{walk_leg_pd_scale:.12g}",
@@ -306,6 +394,7 @@ def make_env(
             "ODC_PUSH_DIR_Z": f"{push_dir_z:.12g}",
             "ODC_PUSH_TRIGGER_MODE": push_trigger_mode,
             "ODC_PUSH_TRIGGER_PHI": f"{push_trigger_phi:.12g}",
+            "ODC_PUSH_RECOVERY_STOP_STEPS": str(push_recovery_stop_steps),
             "ODC_SENSOR_NOISE_ENABLE": "1" if sensor_noise_enable else "0",
             "ODC_SENSOR_NOISE_SEED": str(sensor_noise_seed),
             "ODC_NOISE_BASE_POS_STD": f"{noise_base_pos_std:.12g}",
@@ -322,7 +411,15 @@ def make_env(
         # The executable keeps the nominal leg fraction at 0.5 when lambda scaling
         # is used, and the generated prediction filename includes that value.
         effective_lf = leg_mass_fraction
-    env.update(controller_env(controller, ig_dot_filter_tau, tau_non_norm_limit))
+    env.update(
+        controller_env(
+            controller,
+            ig_dot_filter_tau,
+            tau_non_norm_limit,
+            hrel_dot_filter_tau,
+            hrel_reset_on_contact_switch,
+        )
+    )
     if wbc_delta_fr_weight is not None:
         env["ODC_WBC_DELTA_FR_WEIGHT"] = f"{wbc_delta_fr_weight:.12g}"
     if wbc_delta_ddq_weight is not None:
@@ -353,12 +450,14 @@ def run_trial(
             stderr=subprocess.STDOUT,
             check=True,
         )
-    trace_src = RECORD_DIR / f"exp{exp_id}_trace.csv"
+    isolated = env.get("ODC_ISOLATE_EXPERIMENT_OUTPUTS") == "1"
+    output_suffix = f"_{case}" if isolated else ""
+    trace_src = RECORD_DIR / f"exp{exp_id}{output_suffix}_trace.csv"
     trace_dst = out_dir / f"{case}_trace.csv"
-    shutil.copyfile(trace_src, trace_dst)
+    shutil.move(trace_src, trace_dst)
 
     datalog_dst: Path | None = None
-    datalog_src = RECORD_DIR / f"exp{exp_id}_datalog.log"
+    datalog_src = RECORD_DIR / f"exp{exp_id}{output_suffix}_datalog.log"
     if datalog_src.exists():
         # The high-rate datalog duplicates the retained compact trace and can
         # exceed 100 MB per trial. Release the scratch file between runs.
@@ -369,7 +468,7 @@ def run_trial(
     pred_src = RECORD_DIR / f"pred_error_exp{exp_id}_{case}_lf{pred_leg_fraction:.6f}.csv"
     if pred_src.exists():
         pred_dst = out_dir / f"{case}_pred_error.csv"
-        shutil.copyfile(pred_src, pred_dst)
+        shutil.move(pred_src, pred_dst)
 
     mpc_horizon_dst: Path | None = None
     mpc_horizon_src = (
@@ -378,7 +477,7 @@ def run_trial(
     )
     if mpc_horizon_src.exists():
         mpc_horizon_dst = out_dir / f"{case}_mpc_horizon.csv"
-        shutil.copyfile(mpc_horizon_src, mpc_horizon_dst)
+        shutil.move(mpc_horizon_src, mpc_horizon_dst)
 
     return TrialPaths(
         log=log_path,

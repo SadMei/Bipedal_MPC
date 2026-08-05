@@ -99,9 +99,18 @@ private:
   Eigen::Matrix<double, 3, 3> Ig_dot_bias;
   Eigen::Matrix<double, 3, 1> tau_non;
   Eigen::Matrix<double, 3, 1> tau_non_affine;
+  Eigen::Vector3d h_rel_previous;
+  Eigen::Vector3d h_rel_dot_filtered;
+  bool h_rel_dot_initialized{false};
+  int h_rel_previous_leg_state{-1};
+  bool h_rel_leg_state_initialized{false};
   bool inertia_is_world_aligned{false};
   bool use_linear_inertia_prediction{false};
   bool use_linear_tau_dynamics{false};
+  bool use_discrete_momentum_dynamics{false};
+  bool use_ircmpc_rolling_inertia{false};
+  bool has_inertia_horizon{false};
+  Eigen::Matrix3d Ig_horizon[mpc_N + 1];
   bool Ig_dot_filter_initialized{false};
   bool nominal_Ig_initialized{false};
 

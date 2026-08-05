@@ -10,6 +10,7 @@ in any style, to contribute to the advancement of the community.
 #include "useful_math.h"
 #include <algorithm>
 #include <cstdlib>
+#include <string>
 
 namespace {
 
@@ -24,6 +25,15 @@ double getEnvDouble(const char *name, double defaultValue) {
     return defaultValue;
   }
   return parsed;
+}
+
+bool getEnvBool(const char *name, bool defaultValue) {
+  const char *value = std::getenv(name);
+  if (value == nullptr) {
+    return defaultValue;
+  }
+  return std::string(value) != "0" && std::string(value) != "false" &&
+         std::string(value) != "FALSE";
 }
 
 } // namespace
@@ -127,10 +137,21 @@ MPC::MPC(double dtIn) : QP(nu * ch, nc * ch) {
   Ig = nominal_Ig;
   tau_non.setZero();
   tau_non_affine.setZero();
+  h_rel_previous.setZero();
+  h_rel_dot_filtered.setZero();
+  h_rel_dot_initialized = false;
+  h_rel_previous_leg_state = -1;
+  h_rel_leg_state_initialized = false;
   Ig_dot_filtered.setZero();
   Ig_dot_bias.setZero();
   use_linear_inertia_prediction = false;
   use_linear_tau_dynamics = false;
+  use_discrete_momentum_dynamics = false;
+  use_ircmpc_rolling_inertia = false;
+  has_inertia_horizon = false;
+  for (auto &inertia_node : Ig_horizon) {
+    inertia_node = nominal_Ig;
+  }
   Ig_dot_filter_initialized = false;
   nominal_Ig_initialized = false;
   qp_Status = 0;
@@ -314,11 +335,27 @@ void MPC::dataBusRead(DataBus &Data) {
   }
   use_linear_inertia_prediction =
       Data.use_variable_inertia_model && Data.use_linear_inertia_prediction;
+  use_discrete_momentum_dynamics =
+      Data.use_variable_inertia_model &&
+      Data.use_discrete_momentum_dynamics;
+  use_ircmpc_rolling_inertia =
+      Data.use_variable_inertia_model &&
+      Data.use_ircmpc_rolling_inertia && !use_discrete_momentum_dynamics;
   use_linear_tau_dynamics =
-      Data.use_variable_inertia_model && Data.use_linear_tau_dynamics;
+      Data.use_variable_inertia_model && Data.use_linear_tau_dynamics &&
+      !use_discrete_momentum_dynamics;
+  has_inertia_horizon =
+      (use_discrete_momentum_dynamics || use_ircmpc_rolling_inertia) &&
+      Data.inertia_horizon.size() >= static_cast<size_t>(mpc_N + 1);
+  if (has_inertia_horizon) {
+    for (int node = 0; node <= mpc_N; ++node) {
+      Ig_horizon[node] = Data.inertia_horizon[static_cast<size_t>(node)];
+    }
+  }
   Ig_dot_bias.setZero();
   tau_non.setZero();
   tau_non_affine.setZero();
+  Data.h_rel_dot_mpc.setZero();
   const double tau_non_norm_limit =
       getEnvDouble("ODC_TAU_NON_NORM_LIMIT", 60.0); // [N*m], <=0 disables
   const bool single_support =
@@ -337,6 +374,55 @@ void MPC::dataBusRead(DataBus &Data) {
       Ig_dot_bias *= scale;
       tau_non *= scale;
     }
+  }
+  const bool use_h_rel_rate =
+      getEnvBool("ODC_USE_HREL_RATE", false) &&
+      Data.use_variable_inertia_model && use_linear_tau_dynamics;
+  const bool reset_h_rel_on_contact_switch =
+      getEnvBool("ODC_HREL_RESET_ON_CONTACT_SWITCH", false);
+  if (use_h_rel_rate && Data.h_rel.allFinite()) {
+    const int current_leg_state = static_cast<int>(Data.legState);
+    const bool contact_state_changed =
+        h_rel_leg_state_initialized &&
+        current_leg_state != h_rel_previous_leg_state;
+    h_rel_previous_leg_state = current_leg_state;
+    h_rel_leg_state_initialized = true;
+
+    if (reset_h_rel_on_contact_switch && contact_state_changed) {
+      // Do not differentiate across a hybrid contact transition. Keep the
+      // pre-transition filtered estimate for this MPC update, while resetting
+      // the finite-difference baseline to the first sample of the new mode.
+      h_rel_previous = Data.h_rel;
+      h_rel_dot_initialized = true;
+      if (h_rel_dot_filtered.allFinite()) {
+        tau_non_affine = h_rel_dot_filtered;
+      }
+    } else {
+      Eigen::Vector3d h_rel_dot_raw = Eigen::Vector3d::Zero();
+      if (h_rel_dot_initialized) {
+        h_rel_dot_raw = (Data.h_rel - h_rel_previous) / dt;
+      } else {
+        h_rel_dot_initialized = true;
+      }
+      h_rel_previous = Data.h_rel;
+      const double h_rel_filter_tau =
+          getEnvDouble("ODC_HREL_DOT_FILTER_TAU", 0.02);
+      if (h_rel_filter_tau > 0.0) {
+        const double alpha = dt / (h_rel_filter_tau + dt);
+        h_rel_dot_filtered += alpha * (h_rel_dot_raw - h_rel_dot_filtered);
+      } else {
+        h_rel_dot_filtered = h_rel_dot_raw;
+      }
+      if (h_rel_dot_filtered.allFinite()) {
+        tau_non_affine = h_rel_dot_filtered;
+      }
+    }
+  } else {
+    h_rel_dot_initialized = false;
+    h_rel_leg_state_initialized = false;
+    h_rel_previous_leg_state = -1;
+    h_rel_previous.setZero();
+    h_rel_dot_filtered.setZero();
   }
   const double tau_affine_norm = tau_non_affine.norm();
   if (tau_non_norm_limit > 0.0 && tau_affine_norm > tau_non_norm_limit) {
@@ -365,7 +451,12 @@ void MPC::dataBusRead(DataBus &Data) {
       tau_non_affine = tau_non;
     }
   }
+  if (use_discrete_momentum_dynamics) {
+    tau_non.setZero();
+    tau_non_affine.setZero();
+  }
   Data.tau_non_mpc = tau_non;
+  Data.h_rel_dot_mpc = tau_non_affine;
 
   // --- 4. 预测未来支撑状态 ---
   legStateCur = Data.legState;      // 当前支撑状态 (左/右/双支撑)
@@ -404,6 +495,9 @@ void MPC::cal() {
     const bool predict_Ig =
         use_linear_inertia_prediction && inertia_is_world_aligned;
     auto predictedIg = [&](int node) {
+      if (has_inertia_horizon && node >= 0 && node <= mpc_N) {
+        return Ig_horizon[node];
+      }
       Eigen::Matrix3d Ig_i = Ig;
       if (predict_Ig) {
         Ig_i += static_cast<double>(node) * dt * Ig_dot;
@@ -415,6 +509,9 @@ void MPC::cal() {
       }
       return Ig_i;
     };
+    const bool use_discrete_inertia_sequence =
+        use_discrete_momentum_dynamics &&
+        (has_inertia_horizon || predict_Ig);
     // --- 1. 构建离散时间状态空间模型 X(k+1) = A*X(k) + B*U(k) ---
     for (int i = 0; i < mpc_N; i++) {
       Ac[i].setZero();
@@ -427,6 +524,12 @@ void MPC::cal() {
       }
       // 离散化: A = I + dt*Ac
       A[i] = Eigen::MatrixXd::Identity(nx, nx) + dt * Ac[i];
+      if (use_discrete_inertia_sequence) {
+        // World-frame discrete momentum balance, with h_rel neglected:
+        // I_{i+1} * omega_{i+1} = I_i * omega_i + dt * tau_i.
+        A[i].block<3, 3>(6, 6) =
+            predictedIg(i + 1).inverse() * predictedIg(i);
+      }
     }
     for (int i = 0; i < mpc_N; i++) {
       Bc[i].setZero();
@@ -462,6 +565,18 @@ void MPC::cal() {
       Bc[i]((nx - 1), (nu - 1)) = 1.0 / m;
       // 离散化: B = dt*Bc
       B[i] = dt * Bc[i];
+      if (use_discrete_inertia_sequence) {
+        const Eigen::Matrix3d next_inertia_inv =
+            predictedIg(i + 1).inverse();
+        B[i].block<3, 3>(6, 0) =
+            dt * next_inertia_inv *
+            CrossProduct_A(pf2comi[i].block<3, 1>(0, 0));
+        B[i].block<3, 3>(6, 3) = dt * next_inertia_inv;
+        B[i].block<3, 3>(6, 6) =
+            dt * next_inertia_inv *
+            CrossProduct_A(pf2comi[i].block<3, 1>(3, 0));
+        B[i].block<3, 3>(6, 9) = dt * next_inertia_inv;
+      }
 
       // 新增：计算连续时间的常数偏置项 C_c（包含非线性前馈）
       // Affine bias term induced by the nonlinear centroidal feedforward.

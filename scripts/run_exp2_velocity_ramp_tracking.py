@@ -123,7 +123,7 @@ def main() -> int:
     parser.add_argument("--controllers", default="srbm,vicm_ac")
     parser.add_argument("--tracking-duration", type=float, default=30.0)
     parser.add_argument("--vx", type=float, default=1.5)
-    parser.add_argument("--sine-wz-amp", type=float, default=0.25)
+    parser.add_argument("--sine-wz-amp", type=float, default=0.4)
     parser.add_argument("--sine-wz-period", type=float, default=4.0)
     parser.add_argument("--sine-wz-start", type=float, default=4.0)
     parser.add_argument("--tswing", type=float, default=0.45)

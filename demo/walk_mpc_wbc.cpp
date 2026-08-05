@@ -524,6 +524,8 @@ int main(int argc, char **argv) {
   const bool push_phase_trigger_enabled =
       getEnvBool("ODC_PUSH_PHASE_TRIGGER", push_trigger_mode == "phase");
   push_trigger_phi = getEnvDouble("ODC_PUSH_TRIGGER_PHI", push_trigger_phi);
+  const int push_recovery_stop_steps =
+      std::max(0, getEnvInt("ODC_PUSH_RECOVERY_STOP_STEPS", 0));
   push_dir_W(0) = getEnvDouble("ODC_PUSH_DIR_X", push_dir_W(0));
   push_dir_W(1) = getEnvDouble("ODC_PUSH_DIR_Y", push_dir_W(1));
   push_dir_W(2) = getEnvDouble("ODC_PUSH_DIR_Z", push_dir_W(2));
@@ -582,6 +584,12 @@ int main(int argc, char **argv) {
       getEnvBool("ODC_PREDICT_IG_LINEAR", false);
   const bool use_linear_tau_dynamics =
       getEnvBool("ODC_LINEAR_TAU_DYNAMICS", use_linear_inertia_prediction);
+  const bool use_discrete_momentum_dynamics =
+      getEnvBool("ODC_DISCRETE_MOMENTUM_DYNAMICS", false);
+  const bool use_discrete_momentum_q_preview =
+      getEnvBool("ODC_DISCRETE_MOMENTUM_Q_PREVIEW", true);
+  const bool use_ircmpc_rolling_inertia =
+      getEnvBool("ODC_IRCMPC_ROLLING_INERTIA", false);
   const bool use_tau_phase_gate = getEnvBool("ODC_TAU_PHASE_GATE", false);
   const double tau_phase_gate_min = getEnvDouble("ODC_TAU_PHASE_MIN", 0.2);
   const double tau_phase_gate_max = getEnvDouble("ODC_TAU_PHASE_MAX", 0.8);
@@ -600,7 +608,7 @@ int main(int argc, char **argv) {
       getEnvDouble("ODC_STEP_SPEED_RAMP_TIME", 3.0);
   const bool use_sine_turn_profile = getEnvBool("ODC_SINE_TURN", false);
   const double sine_wz_base = getEnvDouble("ODC_SINE_WZ_BASE", 0.0);
-  const double sine_wz_amp = getEnvDouble("ODC_SINE_WZ_AMP", 0.35);
+  const double sine_wz_amp = getEnvDouble("ODC_SINE_WZ_AMP", 0.4);
   const double sine_wz_period = getEnvDouble("ODC_SINE_WZ_PERIOD", 4.0);
   const double sine_wz_start_time =
       getEnvDouble("ODC_SINE_WZ_START_TIME", sine_start_time);
@@ -636,6 +644,8 @@ int main(int argc, char **argv) {
           : "SRBM";
   const std::string controller_label =
       getEnvString("ODC_RUN_LABEL", default_controller_label);
+  const bool isolate_experiment_outputs =
+      getEnvBool("ODC_ISOLATE_EXPERIMENT_OUTPUTS", false);
 
   const double requested_leg_mass_fraction = leg_mass_fraction;
   leg_mass_fraction = std::clamp(leg_mass_fraction, 0.0, 0.8);
@@ -645,9 +655,13 @@ int main(int argc, char **argv) {
               << std::endl;
   }
 
-  const std::string exp_tag =
-      "../record/exp" + std::to_string(static_cast<int>(exp));
-  const std::string summary_path = "../record/exp_summary.csv";
+  const std::string output_suffix =
+      isolate_experiment_outputs ? "_" + controller_label : "";
+  const std::string exp_tag = "../record/exp" +
+                              std::to_string(static_cast<int>(exp)) +
+                              output_suffix;
+  const std::string summary_path =
+      "../record/exp_summary" + output_suffix + ".csv";
   const std::string fr_ff_path =
       "../record/fr_ff_exp" + std::to_string(static_cast<int>(exp)) + "_" +
       controller_label + "_lf" + std::to_string(leg_mass_fraction) + ".csv";
@@ -689,7 +703,8 @@ int main(int argc, char **argv) {
 	         "wbc_delta_fr_norm,"
 	         "controller_mass,controller_leg_mass,fLz_touch,fRz_touch,"
          "fLz_contact_raw,fRz_contact_raw,fLz_contact,fRz_contact,"
-         "fLz_xml_touch,fRz_xml_touch,FLest_z,FRest_z,fall_detected\n";
+	         "fLz_xml_touch,fRz_xml_touch,FLest_z,FRest_z,fall_detected,"
+             "push_triggered,push_actual_start,recovery_steps,motion_state\n";
 
   fr_ff_file
       << "time,controller_label,exp_id,use_variable_inertia,use_tau_bias,"
@@ -755,6 +770,12 @@ int main(int argc, char **argv) {
   std::cout << "[VICM] linear_inertia_prediction="
             << (use_linear_inertia_prediction ? 1 : 0)
             << " linear_tau_dynamics=" << (use_linear_tau_dynamics ? 1 : 0)
+            << " discrete_momentum_dynamics="
+            << (use_discrete_momentum_dynamics ? 1 : 0)
+            << " q_preview="
+            << (use_discrete_momentum_q_preview ? 1 : 0)
+            << " ircmpc_rolling_inertia="
+            << (use_ircmpc_rolling_inertia ? 1 : 0)
             << " tau_phase_gate=" << (use_tau_phase_gate ? 1 : 0)
             << " tau_phase_window=[" << tau_phase_gate_min << ","
             << tau_phase_gate_max << "]"
@@ -936,6 +957,11 @@ int main(int argc, char **argv) {
   double mpcTimingWallMsMax = 0.0;
   double mpcTimingQpMsSum = 0.0;
   double mpcTimingQpMsMax = 0.0;
+  uint64_t mpcTimingTotalSamples = 0;
+  double mpcTimingTotalWallMsSum = 0.0;
+  double mpcTimingTotalWallMsMax = 0.0;
+  double mpcTimingTotalQpMsSum = 0.0;
+  double mpcTimingTotalQpMsMax = 0.0;
   OneStepPredictionFrame predictionFrame;
   Eigen::Matrix3d predictionIgDotFiltered = Eigen::Matrix3d::Zero();
   bool predictionIgDotFilterInitialized = false;
@@ -951,6 +977,9 @@ int main(int argc, char **argv) {
   double pushActualStartTime = push_start_time;
   double lastPushPhi = std::numeric_limits<double>::quiet_NaN();
   DataBus::LegState lastPushLegState = DataBus::DSt;
+  bool recoveryStopCommanded = false;
+  uint32_t recoveryTriggerStepCount = 0;
+  uint32_t recoveryCompletedSteps = 0;
   std::mt19937 sensorNoiseRng(sensor_noise_seed);
   std::normal_distribution<double> standardNormal(0.0, 1.0);
   const auto sampleNoise = [&](double stddev) {
@@ -977,6 +1006,9 @@ int main(int argc, char **argv) {
     simstart = mj_data->time;
     while (mj_data->time - simstart < 1.0 / 60.0 && uiController.runSim) {
       const bool pushEnabled = push_force > 0.0 && push_duration > 0.0;
+      const bool pushEventEnabled =
+          push_duration > 0.0 &&
+          (push_force > 0.0 || push_recovery_stop_steps > 0);
       const bool pushReady =
           !push_phase_trigger_enabled || pushPhaseTriggered;
       const bool pushActive =
@@ -1047,6 +1079,11 @@ int main(int argc, char **argv) {
           command_wz = sine_wz_base + sine_wz_amp * std::sin(phase);
         }
       }
+      if (recoveryStopCommanded) {
+        command_speed_x = 0.0;
+        command_speed_y = 0.0;
+        command_wz = 0.0;
+      }
 
       RobotState.exp_id = static_cast<int>(exp);
       RobotState.leg_mass_fraction = leg_mass_fraction;
@@ -1054,6 +1091,10 @@ int main(int argc, char **argv) {
       RobotState.use_tau_bias_feedforward = use_tau_bias_feedforward;
       RobotState.use_linear_inertia_prediction = use_linear_inertia_prediction;
       RobotState.use_linear_tau_dynamics = use_linear_tau_dynamics;
+      RobotState.use_discrete_momentum_dynamics =
+          use_discrete_momentum_dynamics;
+      RobotState.use_ircmpc_rolling_inertia =
+          use_ircmpc_rolling_inertia;
       RobotState.tau_bias_scale = tau_bias_scale;
       RobotState.use_tau_phase_gate = use_tau_phase_gate;
       RobotState.tau_phase_gate_min = tau_phase_gate_min;
@@ -1151,6 +1192,9 @@ int main(int argc, char **argv) {
           legStateInitialized = true;
         } else if (RobotState.legState != lastLegState) {
           ++stepCount;
+          if (recoveryStopCommanded && stepCount > recoveryTriggerStepCount) {
+            recoveryCompletedSteps = stepCount - recoveryTriggerStepCount;
+          }
           if (print_gait_switch) {
             const double fl_est_z =
                 RobotState.FL_est.size() > 2
@@ -1184,7 +1228,7 @@ int main(int argc, char **argv) {
 
       RobotState.step_count = stepCount;
 
-      if (pushEnabled && push_phase_trigger_enabled && !pushPhaseTriggered &&
+      if (pushEventEnabled && push_phase_trigger_enabled && !pushPhaseTriggered &&
           simTime >= push_start_time) {
         const bool phaseStateValid =
             RobotState.motionState == DataBus::Walk &&
@@ -1199,6 +1243,14 @@ int main(int argc, char **argv) {
           if (crossedTriggerPhi) {
             pushPhaseTriggered = true;
             pushActualStartTime = simTime + mj_model->opt.timestep;
+            if (push_recovery_stop_steps > 0) {
+              recoveryStopCommanded = true;
+              recoveryTriggerStepCount = stepCount;
+              recoveryCompletedSteps = 0;
+              jsInterp.setVxDesLPara(0.0, mj_model->opt.timestep);
+              jsInterp.setVyDesLPara(0.0, mj_model->opt.timestep);
+              jsInterp.setWzDesLPara(0.0, mj_model->opt.timestep);
+            }
           }
           lastPushPhi = phiNow;
           lastPushLegState = RobotState.legState;
@@ -1297,6 +1349,15 @@ int main(int argc, char **argv) {
         }
 
         const auto mpcWallStart = std::chrono::steady_clock::now();
+        if (((use_discrete_momentum_dynamics &&
+              use_discrete_momentum_q_preview) ||
+             use_ircmpc_rolling_inertia) &&
+            use_variable_inertia_model) {
+          kinDynSolver.computeCentroidalInertiaHorizon(
+              RobotState, mpc_N + 1, dt_200Hz);
+        } else {
+          RobotState.inertia_horizon.clear();
+        }
         MPC_solv.dataBusRead(RobotState);
         MPC_solv.cal();
         MPC_solv.dataBusWrite(RobotState);
@@ -1350,6 +1411,13 @@ int main(int argc, char **argv) {
           mpcTimingWallMsMax = std::max(mpcTimingWallMsMax, mpcWallMs);
           mpcTimingQpMsSum += mpcQpMs;
           mpcTimingQpMsMax = std::max(mpcTimingQpMsMax, mpcQpMs);
+          ++mpcTimingTotalSamples;
+          mpcTimingTotalWallMsSum += mpcWallMs;
+          mpcTimingTotalWallMsMax =
+              std::max(mpcTimingTotalWallMsMax, mpcWallMs);
+          mpcTimingTotalQpMsSum += mpcQpMs;
+          mpcTimingTotalQpMsMax =
+              std::max(mpcTimingTotalQpMsMax, mpcQpMs);
           if (print_mpc_timing && simTime >= nextMpcTimingPrintTime &&
               mpcTimingSamples > 0) {
             std::cout << std::fixed << std::setprecision(3)
@@ -1433,7 +1501,10 @@ int main(int argc, char **argv) {
           L_diag << 80.0, 80.0, 10.0, 1.0, 200.0, 1.0, 4.0, 4.0, 1.0,
               100.0, 10.0, 1.0;
         } else {
-          L_diag << 50.0, 50.0, 10.0, 1.0, 200.0, 1.0, 1.0, 1.0, 0.5,
+          // Previous default:
+          // L_diag << 50.0, 50.0, 10.0, 1.0, 200.0, 1.0, 1.0, 1.0,
+          //     0.5, 100.0, 10.0, 1.0;
+          L_diag << 50.0, 50.0, 80.0, 1.0, 200.0, 1.0, 1.0, 1.0, 10.0,
               100.0, 10.0, 1.0;
         }
         if (has_mpc_l_diag_override) {
@@ -1591,7 +1662,10 @@ int main(int argc, char **argv) {
                          ? RobotState.FR_est(2)
                          : std::numeric_limits<double>::quiet_NaN())
                  << ","
-                 << (RobotState.fall_detected ? 1 : 0) << "\n";
+                 << (RobotState.fall_detected ? 1 : 0) << ","
+                 << (pushPhaseTriggered ? 1 : 0) << ","
+                 << pushActualStartTime << "," << recoveryCompletedSteps << ","
+                 << static_cast<int>(RobotState.motionState) << "\n";
 
       if (snapshot_enabled && snapshot_index < snapshot_count &&
           simTime + 0.5 * mj_model->opt.timestep >= next_snapshot_time) {
@@ -1636,6 +1710,19 @@ int main(int argc, char **argv) {
     if (!headless) {
       uiController.updateScene();
     }
+  }
+
+  if (print_mpc_timing && mpcTimingTotalSamples > 0) {
+    std::cout << std::fixed << std::setprecision(6)
+              << "[MPC timing total] samples=" << mpcTimingTotalSamples
+              << " avg_wall_ms="
+              << (mpcTimingTotalWallMsSum /
+                  static_cast<double>(mpcTimingTotalSamples))
+              << " max_wall_ms=" << mpcTimingTotalWallMsMax
+              << " avg_qp_ms="
+              << (mpcTimingTotalQpMsSum /
+                  static_cast<double>(mpcTimingTotalSamples))
+              << " max_qp_ms=" << mpcTimingTotalQpMsMax << std::endl;
   }
 
   if (mpc_horizon_file.is_open()) {

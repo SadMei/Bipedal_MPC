@@ -77,6 +77,7 @@ struct DataBus {
   Eigen::Vector3d slop;
   Eigen::Matrix<double, 3, 3> inertia;
   Eigen::Matrix<double, 3, 3> inertia_dot;
+  std::vector<Eigen::Matrix3d> inertia_horizon;
   double controller_mass{77.35};
   double controller_leg_mass{0.0};
 
@@ -87,6 +88,8 @@ struct DataBus {
   bool use_tau_bias_feedforward{true};
   bool use_linear_inertia_prediction{false};
   bool use_linear_tau_dynamics{false};
+  bool use_discrete_momentum_dynamics{false};
+  bool use_ircmpc_rolling_inertia{false};
   double tau_bias_scale{1.0};
   bool use_tau_phase_gate{false};
   double tau_phase_gate_min{0.2};
@@ -105,6 +108,8 @@ struct DataBus {
   Eigen::Vector3d tau_non_mpc; // tau_non actually injected into MPC
   Eigen::Vector3d tau_non_idot_omega; // I_G_dot * omega component of tau_non_com
   Eigen::Vector3d tau_non_gyro;       // omega x (I_G * omega) component of tau_non_com
+  Eigen::Vector3d h_rel;              // centroidal relative angular momentum
+  Eigen::Vector3d h_rel_dot_mpc;      // filtered h_rel rate frozen over the MPC horizon
 
   // cmd value from the joystick interpreter
   Eigen::Vector3d js_eul_des;
@@ -206,9 +211,14 @@ struct DataBus {
     tau_non_mpc.setZero();
     tau_non_idot_omega.setZero();
     tau_non_gyro.setZero();
+    h_rel.setZero();
+    h_rel_dot_mpc.setZero();
     inertia_dot.setZero();
+    inertia_horizon.clear();
     use_linear_inertia_prediction = false;
     use_linear_tau_dynamics = false;
+    use_discrete_momentum_dynamics = false;
+    use_ircmpc_rolling_inertia = false;
     tau_bias_scale = 1.0;
     use_tau_phase_gate = false;
     tau_phase_gate_min = 0.2;

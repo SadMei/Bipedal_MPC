@@ -85,6 +85,7 @@ public:
   Eigen::Vector3d tau_non_com;
   Eigen::Vector3d tau_non_idot_omega;
   Eigen::Vector3d tau_non_gyro;
+  Eigen::Vector3d h_rel;
   double lambda_leg_scale{1.0};
   double leg_mass_fraction{0.38607619909502255};
   double nominal_leg_mass_fraction{0.38607619909502255};
@@ -105,6 +106,8 @@ public:
   double getNominalLegMassFraction() const { return nominal_leg_mass_fraction; }
   void dataBusRead(DataBus const &robotState);
   void dataBusWrite(DataBus &robotState);
+  void computeCentroidalInertiaHorizon(DataBus &robotState, int node_count,
+                                        double node_dt);
   void computeJ_dJ();
   void computeDyn();
   IkRes computeInK_Leg(const Eigen::Matrix3d &Rdes_L,
