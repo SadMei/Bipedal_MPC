@@ -41,6 +41,7 @@ void GaitScheduler::dataBusRead(const DataBus &robotState) {
     fe_l_pos_W=robotState.fe_l_pos_W;
     fe_l_rot_W=robotState.fe_l_rot_W;
     fe_r_rot_W=robotState.fe_r_rot_W;
+    swingTargetPos_W=robotState.swingDesPosFinal_W;
     dq=robotState.dq;
     motionState=robotState.motionState;
 }
@@ -124,9 +125,19 @@ void GaitScheduler::step() {
     const double FR_touch_z = Fz_R_m > 0.0 ? Fz_R_m : 0.0;
     const double FL_switch_z = useTouchSwitchForce ? FL_touch_z : FLest[2];
     const double FR_switch_z = useTouchSwitchForce ? FR_touch_z : FRest[2];
+    const auto touchdownPositionAccepted = [this](const Eigen::VectorXd &foot_pos) {
+        if (!useTouchdownPositionGate || !swingTargetPos_W.allFinite() ||
+            swingTargetPos_W.squaredNorm() < 1e-8) {
+            return true;
+        }
+        return std::abs(foot_pos(0) - swingTargetPos_W(0)) <=
+                   touchdownPositionTolerance &&
+               std::abs(foot_pos(2) - swingTargetPos_W(2)) <=
+                   touchdownHeightTolerance;
+    };
 
     if (legState == DataBus::LSt && FR_switch_z >= FzThrehold &&
-        phi >= minTouchdownPhase){
+        phi >= minTouchdownPhase && touchdownPositionAccepted(fe_r_pos_W)){
         if (enableNextStep){
             legState = DataBus::RSt;
             swingStartPos_W=fe_l_pos_W;
@@ -135,7 +146,7 @@ void GaitScheduler::step() {
         }
     }
     else if(legState == DataBus::RSt && FL_switch_z >= FzThrehold &&
-            phi >= minTouchdownPhase){
+            phi >= minTouchdownPhase && touchdownPositionAccepted(fe_l_pos_W)){
         if (enableNextStep) {
             legState = DataBus::LSt;
             swingStartPos_W = fe_r_pos_W;
@@ -170,7 +181,6 @@ void GaitScheduler::step() {
         legStateNext = DataBus::LSt;
     }
 }
-
 
 
 

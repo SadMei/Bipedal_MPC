@@ -626,7 +626,6 @@ int main(int argc, char **argv) {
       getEnvBool("ODC_LOG_PREDICTION_ERROR", false);
   const double prediction_ig_dot_filter_tau = std::max(
       0.0, getEnvDouble("ODC_PREDICTION_IG_DOT_FILTER_TAU", 0.01));
-  const double gait_swing_time = getEnvDouble("ODC_TSWING", 0.45);
   const double gait_switch_force_threshold =
       getEnvDouble("ODC_GAIT_SWITCH_FORCE_THRESHOLD", 100.0);
   StairTerrainProfile stair_terrain;
@@ -636,13 +635,21 @@ int main(int argc, char **argv) {
   stair_terrain.tread_depth =
       getEnvDouble("ODC_STAIR_TREAD_DEPTH", 0.5);
   stair_terrain.riser_height =
-      getEnvDouble("ODC_STAIR_RISER_HEIGHT", 0.05);
+      getEnvDouble("ODC_STAIR_RISER_HEIGHT", 0.15);
   stair_terrain.max_height =
-      getEnvDouble("ODC_STAIR_MAX_HEIGHT", 1.4);
+      getEnvDouble("ODC_STAIR_MAX_HEIGHT", 1.5);
+  const double gait_swing_time = getEnvDouble(
+      "ODC_TSWING", stair_terrain.enabled ? 0.55 : 0.45);
   const bool use_stair_contact_preview =
       stair_terrain.enabled && getEnvBool("ODC_STAIR_CONTACT_PREVIEW", true);
   const double gait_min_touchdown_phase = getEnvDouble(
-      "ODC_GAIT_MIN_TOUCHDOWN_PHASE", 0.6);
+      "ODC_GAIT_MIN_TOUCHDOWN_PHASE", stair_terrain.enabled ? 0.85 : 0.6);
+  const bool use_touchdown_position_gate = stair_terrain.enabled &&
+      getEnvBool("ODC_GAIT_TOUCHDOWN_POSITION_GATE", true);
+  const double touchdown_position_tolerance =
+      getEnvDouble("ODC_GAIT_TOUCHDOWN_POSITION_TOLERANCE", 0.18);
+  const double touchdown_height_tolerance =
+      getEnvDouble("ODC_GAIT_TOUCHDOWN_HEIGHT_TOLERANCE", 0.15);
   const double torque_limit_scale =
       getEnvDouble("ODC_TORQUE_LIMIT_SCALE", 1.0);
   const double walk_leg_pd_scale =
@@ -782,11 +789,20 @@ int main(int argc, char **argv) {
   gaitScheduler.useTouchSwitchForce = gait_switch_force_source != "estimate";
   gaitScheduler.FzThrehold = gait_switch_force_threshold;
   gaitScheduler.minTouchdownPhase = gait_min_touchdown_phase;
+  gaitScheduler.useTouchdownPositionGate = use_touchdown_position_gate;
+  gaitScheduler.touchdownPositionTolerance = touchdown_position_tolerance;
+  gaitScheduler.touchdownHeightTolerance = touchdown_height_tolerance;
   std::cout << "[GaitScheduler] tSwing=" << gait_swing_time
             << " switch_force_source="
             << (gaitScheduler.useTouchSwitchForce ? "touch" : "estimate")
             << " switch_force_threshold=" << gaitScheduler.FzThrehold
             << " min_touchdown_phase=" << gaitScheduler.minTouchdownPhase
+            << " touchdown_position_gate="
+            << (gaitScheduler.useTouchdownPositionGate ? 1 : 0)
+            << " touchdown_position_tolerance="
+            << gaitScheduler.touchdownPositionTolerance
+            << " touchdown_height_tolerance="
+            << gaitScheduler.touchdownHeightTolerance
             << std::endl;
   if (use_leg_lambda_scale) {
     std::cout << "[LegScale] lambda=" << leg_lambda_scale << std::endl;
@@ -882,7 +898,7 @@ int main(int argc, char **argv) {
   footPlacement.kp_vy = getEnvDouble("ODC_FOOT_KP_VY", 0.03);
   footPlacement.kp_wz = getEnvDouble("ODC_FOOT_KP_WZ", 0.03);
   footPlacement.stepHeight = getEnvDouble(
-      "ODC_FOOT_STEP_HEIGHT", stair_terrain.enabled ? 0.30 : 0.205);
+      "ODC_FOOT_STEP_HEIGHT", stair_terrain.enabled ? 0.40 : 0.205);
   footPlacement.xOff_L = getEnvDouble("ODC_FOOT_X_OFFSET_L", -0.01);
   footPlacement.yOff_L = getEnvDouble("ODC_FOOT_Y_OFFSET_L", 0.01);
   footPlacement.zOff_W = getEnvDouble("ODC_FOOT_Z_OFFSET_W", -0.035);
@@ -1523,8 +1539,7 @@ int main(int argc, char **argv) {
         const double fr_torso_angle_error = computeTorsoAngleError(RobotState);
         const bool fr_fall_detected = detectFall(
             RobotState,
-            fallHeightThreshold +
-                stair_terrain.stepHeightAt(RobotState.q(0)),
+            fallHeightThreshold + RobotState.stair_support_height,
             fallAngleThreshold);
 
         fr_ff_file << std::fixed << std::setprecision(6) << simTime << ","
@@ -1620,11 +1635,10 @@ int main(int argc, char **argv) {
 	          RobotState.wbc_FrRes.size() == RobotState.Fr_ff.size()
 	              ? (RobotState.wbc_FrRes - RobotState.Fr_ff).norm()
 	              : std::numeric_limits<double>::quiet_NaN();
-	      RobotState.fall_detected = detectFall(
-	          RobotState,
-	          fallHeightThreshold +
-	              stair_terrain.stepHeightAt(RobotState.q(0)),
-	          fallAngleThreshold);
+		      RobotState.fall_detected = detectFall(
+		          RobotState,
+		          fallHeightThreshold + RobotState.stair_support_height,
+		          fallAngleThreshold);
 
       logger.startNewLine();
       logger.recItermData("simTime", simTime);

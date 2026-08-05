@@ -7,8 +7,8 @@ struct StairTerrainProfile {
   bool enabled{false};
   double first_riser_x{0.5};
   double tread_depth{0.5};
-  double riser_height{0.05};
-  double max_height{1.4};
+  double riser_height{0.15};
+  double max_height{1.5};
 
   double stepHeightAt(double x) const {
     if (!enabled || tread_depth <= 1e-9 || riser_height <= 0.0 ||

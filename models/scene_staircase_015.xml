@@ -1,0 +1,34 @@
+<mujoco model="standard staircase scene">
+  <include file="AzureLoong.xml"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="150" elevation="-5"/>
+  </visual>
+
+  <asset>
+    <texture name="skybox" type="skybox" builtin="gradient" rgb1=".2 .3 .4" rgb2=".1 .15 .2" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1=".2 .3 .4" rgb2=".1 .2 .3"
+             markrgb=".8 .8 .8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <texture name="block" type="2d" file="asset/block.png"/>
+    <material name="block" texture="block" reflectance="0"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1" directional="true" diffuse="0.6 0.6 0.6" specular=".3 .3 .3"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" condim="3"/>
+    <!-- MuJoCo box sizes are half extents. Each tread is 0.5 m deep and each riser is 0.15 m high. -->
+    <geom name="stair_01" type="box" size="0.25 2 0.075" pos="0.75 0.4 0.075" material="block"/>
+    <geom name="stair_02" type="box" size="0.25 2 0.150" pos="1.25 0.4 0.150" material="block"/>
+    <geom name="stair_03" type="box" size="0.25 2 0.225" pos="1.75 0.4 0.225" material="block"/>
+    <geom name="stair_04" type="box" size="0.25 2 0.300" pos="2.25 0.4 0.300" material="block"/>
+    <geom name="stair_05" type="box" size="0.25 2 0.375" pos="2.75 0.4 0.375" material="block"/>
+    <geom name="stair_06" type="box" size="0.25 2 0.450" pos="3.25 0.4 0.450" material="block"/>
+    <geom name="stair_07" type="box" size="0.25 2 0.525" pos="3.75 0.4 0.525" material="block"/>
+    <geom name="stair_08" type="box" size="0.25 2 0.600" pos="4.25 0.4 0.600" material="block"/>
+    <geom name="stair_09" type="box" size="0.25 2 0.675" pos="4.75 0.4 0.675" material="block"/>
+    <geom name="stair_10" type="box" size="1.00 2 0.750" pos="6.00 0.4 0.750" material="block"/>
+  </worldbody>
+</mujoco>

@@ -25,7 +25,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lambdas", nargs="+", type=float, default=(1.0, 1.8))
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--sim-time", type=float, default=12.0)
-    parser.add_argument("--speed", type=float, default=0.5)
+    parser.add_argument("--speed", type=float, default=0.4)
+    parser.add_argument("--swing-time", type=float, default=0.55)
+    parser.add_argument("--step-height", type=float, default=0.40)
+    parser.add_argument("--min-touchdown-phase", type=float, default=0.85)
     parser.add_argument("--label-prefix", default="stair_compare")
     parser.add_argument("--summary", type=Path,
                         default=RECORD_DIR / "stair_comparison_summary.csv")
@@ -36,19 +39,22 @@ def common_environment(args: argparse.Namespace, leg_lambda: float,
                        label: str) -> dict[str, str]:
     values = {
         "ODC_HEADLESS": "1",
-        "ODC_SCENE_XML": "../models/scene_staircase.xml",
+        "ODC_SCENE_XML": "../models/scene_staircase_015.xml",
         "ODC_STAIR_MODE": "1",
         "ODC_STAIR_CONTACT_PREVIEW": "1",
         "ODC_STAIR_FIRST_RISER_X": "0.5",
         "ODC_STAIR_TREAD_DEPTH": "0.5",
-        "ODC_STAIR_RISER_HEIGHT": "0.05",
-        "ODC_STAIR_MAX_HEIGHT": "1.4",
+        "ODC_STAIR_RISER_HEIGHT": "0.15",
+        "ODC_STAIR_MAX_HEIGHT": "1.5",
         "ODC_STAIR_LANDING_MARGIN": "0.10",
-        "ODC_GAIT_MIN_TOUCHDOWN_PHASE": "0.60",
-        "ODC_FOOT_STEP_HEIGHT": "0.30",
+        "ODC_GAIT_MIN_TOUCHDOWN_PHASE": f"{args.min_touchdown_phase:.12g}",
+        "ODC_GAIT_TOUCHDOWN_POSITION_GATE": "1",
+        "ODC_GAIT_TOUCHDOWN_POSITION_TOLERANCE": "0.18",
+        "ODC_GAIT_TOUCHDOWN_HEIGHT_TOLERANCE": "0.15",
+        "ODC_FOOT_STEP_HEIGHT": f"{args.step_height:.12g}",
         "ODC_TARGET_SPEED_X": f"{args.speed:.12g}",
         "ODC_TARGET_SPEED_Y": "0",
-        "ODC_TSWING": "0.45",
+        "ODC_TSWING": f"{args.swing_time:.12g}",
         "ODC_GAIT_SWITCH_FORCE_THRESHOLD": "100",
         "ODC_USE_LEG_LAMBDA_SCALE": "1",
         "ODC_LEG_LAMBDA_SCALE": f"{leg_lambda:.12g}",
